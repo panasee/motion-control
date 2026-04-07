@@ -1,0 +1,186 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<English>
+	<MainFrm_NoSystemParaXMLFileInExecuteDir>No System Parameter XML File In Exe Directory</MainFrm_NoSystemParaXMLFileInExecuteDir>
+	<MainFrm_NoSystemParaXMLFileInExecuteDirUseDefaultPara>No System Parameter XML File In Exe Directory, Use Default Parameters</MainFrm_NoSystemParaXMLFileInExecuteDirUseDefaultPara>
+	<MainFrm_DecodeXmlFileOK>Decode System Parameter XML File Succeed!</MainFrm_DecodeXmlFileOK>
+	<MainFrm_DecodeXmlFileFailed>Decode System Parameter XML File Failed!</MainFrm_DecodeXmlFileFailed>
+	<MainFrm_PulseDLIs0ResetParaAndRestart>Pulse DL Is 0, Set the Pulse DL Parameter and Restart!</MainFrm_PulseDLIs0ResetParaAndRestart>
+	<MainFrm_PositiveLimitEnableStop>Warning! Positive Limit Active, STOP!</MainFrm_PositiveLimitEnableStop>
+	<MainFrm_NegtiveLimitEnableStop>Warning! Negtive Limit Active, STOP!</MainFrm_NegtiveLimitEnableStop>
+	<MainFrm_AllProgrameHasSended>All Programes Has Sended!</MainFrm_AllProgrameHasSended>
+	<MainFrm_SendSomeProgrameSucceed>Cycle {0:d3} Anb {1:d3} ed Programe Sended Succeed!</MainFrm_SendSomeProgrameSucceed>
+	<MainFrm_SendSomeProgrameFailed>Cycle {0:d3} Anb {1:d3} ed Programe Sended Failed!</MainFrm_SendSomeProgrameFailed>
+	<MainFrm_ParameterDownloading>System Parameter Downloading...[{0:p}]</MainFrm_ParameterDownloading>
+	<MainFrm_ParameterDownloadFailed>System Parameter Download Failed!</MainFrm_ParameterDownloadFailed>
+	<MainFrm_EncoderParameterDownloading>Encoder Parameter Downloading......[{0:p}]</MainFrm_EncoderParameterDownloading>
+	<MainFrm_EncoderParameterDownloadFailed>Encoder Parameter Download Failed!</MainFrm_EncoderParameterDownloadFailed>
+	<MainFrm_SystemParameterUploading>System Parameter Uploading...[{0:p}]!</MainFrm_SystemParameterUploading>
+	<MainFrm_SystemParameterUploadFailed>System Parameter Upload Failed!</MainFrm_SystemParameterUploadFailed>
+	<MainFrm_EncoderParameterUploading>Encoder Parameter Uploading...[{0:p}]</MainFrm_EncoderParameterUploading>
+	<MainFrm_EncoderarameterUploadFailed>Encoder Parameter Upload Failed!</MainFrm_EncoderarameterUploadFailed>
+	<MainFrm_ChooseProgrameLineToEdit>Choose the Programe Line to Edit!</MainFrm_ChooseProgrameLineToEdit>
+	<MainFrm_OpenProgrameFileSucceed>Open Programe File [{0}] Succeed!</MainFrm_OpenProgrameFileSucceed>
+	<MainFrm_SaveProgrameFileTo>Save Programe File to </MainFrm_SaveProgrameFileTo>
+	<MainFrm_SaveProgrameFileFailedBeacuseNoPrigrame>Programe List Empty, Can not Save!</MainFrm_SaveProgrameFileFailedBeacuseNoPrigrame>
+	<MainFrm_ConnectMCCardFailed>Connect MCCard Failed by Port[{0}]!</MainFrm_ConnectMCCardFailed>
+	<MainFrm_ConnectMCCardSucceed>Connect MCCard Succeed by Port[{0}]!</MainFrm_ConnectMCCardSucceed>
+	<MainFrm_CloseMCCardSucceed>Close Port Succeed!</MainFrm_CloseMCCardSucceed>
+	<MainFrm_CloseMCCardFailed>Close Port Failed！</MainFrm_CloseMCCardFailed>
+	<MainFrm_NoSysParaFileFristOpenItFirst>No System Parameters File, Open One First!</MainFrm_NoSysParaFileFristOpenItFirst>
+	<MainFrm_UnloadFailed>Unload Failed!Thers is not System Parameters File In EXE Directory!</MainFrm_UnloadFailed>
+	<MainFrm_ProgrameRunningCanNotStartAutoRunAgain>System Running Or Auto Running, Can Not Start Again!</MainFrm_ProgrameRunningCanNotStartAutoRunAgain>
+	<MainFrm_SendProgrameCommandFailedCheckComunication>Send Programe Command Failed, Check Comunication!</MainFrm_SendProgrameCommandFailedCheckComunication>
+	<MainFrm_UpdateSystemParameterFailed>Update Axis Parameters Failed[</MainFrm_UpdateSystemParameterFailed>
+	<MainFrm_UpdateSystemParameterSucceed>Update Axis Parameters Succeed!</MainFrm_UpdateSystemParameterSucceed>
+	<MainFrm_UpdateEncoderParameterFailed>Update Encoder Parameters Failed[</MainFrm_UpdateEncoderParameterFailed>
+	<MainFrm_UpdateEncoderParameterSucceed>Update Encoder Parameters Succeed!</MainFrm_UpdateEncoderParameterSucceed>
+	<MainFrm_TCPConnectFailedCheckIPAndPort>Connect MCCard Through [{0}]IP Address [{1}] Port Failed, Please Check IP Address And Port!</MainFrm_TCPConnectFailedCheckIPAndPort>
+	<MainFrm_TCPConnectSucceed>Connect MCCard Through [{0}] IP Address [{1}] Port Succeed!</MainFrm_TCPConnectSucceed>
+	<MainFrm_TCPCloseFailed>Close TCP Connect Failed!</MainFrm_TCPCloseFailed>
+	<MainFrm_TCPCloseSucceed>Close TCP Connect Succeed!</MainFrm_TCPCloseSucceed>
+
+	<TestIOFrm_TCPCloseSucceed>NegV[0-{0:f2}]V,PosV[{1:f2}-3.3]V</TestIOFrm_TCPCloseSucceed>
+
+	<SysCtrlParaFrm_SaveSystemControlParaFailed>Save System Control Parameter Failed!</SysCtrlParaFrm_SaveSystemControlParaFailed>
+	<SysCtrlParaFrm_SetLCDScanDelayParaFailed>Setn LCD Scan Delay Parameter Failed!</SysCtrlParaFrm_SetLCDScanDelayParaFailed>
+	<SysCtrlParaFrm_SetResetParameterFailed>Set Reset Parameter To Factory Default Failed!</SysCtrlParaFrm_SetResetParameterFailed>
+	<SysCtrlParaFrm_SetHandWheelFailed>Set Hand Wheel Parameter Failed!</SysCtrlParaFrm_SetHandWheelFailed>
+	<SysCtrlParaFrm_ParameterFormatError>Parameter Format Error, Please Check And Reset!</SysCtrlParaFrm_ParameterFormatError>
+	<SysCtrlParaFrm_ReadSystemControlFailed>Read System Control Parameters Failed!</SysCtrlParaFrm_ReadSystemControlFailed>
+
+	<USARTAssitantFrm_OperateSucceed>Succeed!</USARTAssitantFrm_OperateSucceed>
+	<USARTAssitantFrm_OperateFailed>Failed!</USARTAssitantFrm_OperateFailed>
+	<USARTAssitantFrm_OpenPort>Open [{0}] </USARTAssitantFrm_OpenPort>
+	<USARTAssitantFrm_ClosePort>Close [{0}] </USARTAssitantFrm_ClosePort>
+
+	<CacSinglLevFrm_StateOpen>OPEN</CacSinglLevFrm_StateOpen>
+	<CacSinglLevFrm_StateClose>CLSOE</CacSinglLevFrm_StateClose>
+	<CacSinglLevFrm_StateEnable>ENABLE</CacSinglLevFrm_StateEnable>
+	<CacSinglLevFrm_StateDisable>DISABLE</CacSinglLevFrm_StateDisable>
+	<CacSinglLevFrm_NegLimit>Neg Limit</CacSinglLevFrm_NegLimit>
+	<CacSinglLevFrm_PosLimit>Pos Limit</CacSinglLevFrm_PosLimit>
+	<CacSinglLevFrm_Original>Home</CacSinglLevFrm_Original>
+	<CacSinglLevFrm_ComTable>ComTable</CacSinglLevFrm_ComTable>
+	<CacSinglLevFrm_HardLimit>HardLimit</CacSinglLevFrm_HardLimit>
+	<CacSinglLevFrm_SoftLimit>SoftLimit</CacSinglLevFrm_SoftLimit>
+
+	<TriggerMoveFrm_TestEnd>Test Over!</TriggerMoveFrm_TestEnd>
+	<TriggerMoveFrm_TriggerCntError>Trigger Pulse Count Error!</TriggerMoveFrm_TriggerCntError>
+
+	<ManualOpExFrm_CommandModeDist>DIST</ManualOpExFrm_CommandModeDist>
+	<ManualOpExFrm_CommandModePos>POS</ManualOpExFrm_CommandModePos>
+	<ManualOpExFrm_MoveParameterError>Movement Parameter Format Error, Please Input Again!</ManualOpExFrm_MoveParameterError>
+	<ManualOpExFrm_NotSupportGroupMoveInJogMode>Not Support Group Move In Jog Mode!</ManualOpExFrm_NotSupportGroupMoveInJogMode>
+	<ManualOpExFrm_NotChooseAxisInGroupMode>Not Choose Axis In Group Move!</ManualOpExFrm_NotChooseAxisInGroupMode>
+
+	<InputFunCfgFrm_ReadInputCfgParaError>Read Input Config Parameter Failed, Please Update Again!</InputFunCfgFrm_ReadInputCfgParaError>
+	<InputFunCfgFrm_SetLow16BitsInputFunFailed>Set 0-15 Bits Input Extend Function Parameter Failed!</InputFunCfgFrm_SetLow16BitsInputFunFailed>
+	<InputFunCfgFrm_SetHigh16BitsInputFunFailed>Set 16-31 Bits Input Extend Function Parameter Failed!</InputFunCfgFrm_SetHigh16BitsInputFunFailed>
+	<InputFunCfgFrm_SaveParameterToControllerFailed>Save Parameters to Controller Failed!</InputFunCfgFrm_SaveParameterToControllerFailed>
+
+	<AxisExParaFrm_ReadAxisParameterFailed>Read Axis Extend Parameters Failed!</AxisExParaFrm_ReadAxisParameterFailed>
+	<AxisExParaFrm_SetAxisParameterFailed>Set Axis Extend Parameters Failed!</AxisExParaFrm_SetAxisParameterFailed>
+	<AxisExParaFrm_ParameterFormatError>Paramter Format Error!</AxisExParaFrm_ParameterFormatError>
+
+	<ExPosFollowFrm_DataError>External Position File Format Error At Line [{0}]！It must Has 6 Axes Positions And Interval With TAB!</ExPosFollowFrm_DataError>
+	<ExPosFollowFrm_DecodeFileDone>Decode File Done, [{0}] Points！</ExPosFollowFrm_DecodeFileDone>
+	<ExPosFollowFrm_ExceptionRiseWhenDecodeFile>Exception Rise When Decode File!</ExPosFollowFrm_ExceptionRiseWhenDecodeFile>
+	<ExPosFollowFrm_OpenComunicationPortSucceed>Open Communication Port Succeed!</ExPosFollowFrm_OpenComunicationPortSucceed>
+	<ExPosFollowFrm_OpenComunicationPortFailed>Open Communicate Port Failed, Please Confirm It Does not Be Used by Other APP!</ExPosFollowFrm_OpenComunicationPortFailed>
+	<ExPosFollowFrm_ClosePortSucceed>Close Communicate Port Succeed！</ExPosFollowFrm_ClosePortSucceed>
+	<ExPosFollowFrm_ClosePortFailed>Close Communicate Port Failed！</ExPosFollowFrm_ClosePortFailed>
+	<ExPosFollowFrm_StopSendExPositionPoint>Stop Send the External Position Points！</ExPosFollowFrm_StopSendExPositionPoint>
+	<ExPosFollowFrm_SomeCommandSendedOKAndCurrentCount>{0}ed Position Command Sended OK! Current Count = {1}</ExPosFollowFrm_SomeCommandSendedOKAndCurrentCount>
+	<ExPosFollowFrm_SomeCommandSendedFailed>Position Command Sended Failed, Stop Send, Close the Timer! [{0}]</ExPosFollowFrm_SomeCommandSendedFailed>
+
+	<ScopeFrm_ScopeVersionInfo>Scope Tool Version: </ScopeFrm_ScopeVersionInfo>
+	<ScopeFrm_NoChannelPleaseConfigThemFirst>No Valid Channel, Please Config Them First!</ScopeFrm_NoChannelPleaseConfigThemFirst>
+	<ScopeFrm_SendStartSampleCommandFailed>Send Start Sample Command Failed!</ScopeFrm_SendStartSampleCommandFailed>
+	<ScopeFrm_SendSomeChannelConfigCommandFailed>Config {0}ed Channel Failed!</ScopeFrm_SendSomeChannelConfigCommandFailed>
+	<ScopeFrm_ConfigAllChannelSucceed>Config All Channel Succeed!</ScopeFrm_ConfigAllChannelSucceed>
+	<ScopeFrm_NotConfigChannelCanNotDownloadChannelParameters>Can not Download the Channel Parameters Because Not Config the Channel Yet!</ScopeFrm_NotConfigChannelCanNotDownloadChannelParameters>
+	<ScopeFrm_DeleteScopConfigFailed>Delete Scope Config Failed!</ScopeFrm_DeleteScopConfigFailed>
+	<ScopeFrm_CloseScopFailed>Close Scope Failed!</ScopeFrm_CloseScopFailed>
+	<ScopeFrm_SaveScopeConfigFileSucceed>Save Config File [{0}] Succeed!</ScopeFrm_SaveScopeConfigFileSucceed>
+	<ScopeFrm_LoadScopeConfigFileSucceed>Load Config File [{0}] Succeed!</ScopeFrm_LoadScopeConfigFileSucceed>
+	<ScopeFrm_ConfigFileEmpty>Scope Channel Config File Is Empty, Please Retry Again!</ScopeFrm_ConfigFileEmpty>
+	<ScopeFrm_WordChannel>Channel</ScopeFrm_WordChannel>
+	<ScopeFrm_ChannelConfigDonDownloadConfigParameters>Channels Config Done, Download the Config Parameters...</ScopeFrm_ChannelConfigDonDownloadConfigParameters>
+	<ScopeFrm_OpenAndDeleteAllConfigInfo>Open Device And Delete All Config Infomation!</ScopeFrm_OpenAndDeleteAllConfigInfo>
+	<ScopeFrm_OpenScopeFailed>Send Open the Scope Command Failed!</ScopeFrm_OpenScopeFailed>
+	<ScopeFrm_StartDownloadConfigParametes>Start to Send Config Parameters!</ScopeFrm_StartDownloadConfigParametes>
+	<ScopeFrm_SaveFileTo>Save File To</ScopeFrm_SaveFileTo>
+	<ScopeFrm_CanNotSaveFileBecauseFileNameNull>File Name String Is NULL, Can Not Be Saved!</ScopeFrm_CanNotSaveFileBecauseFileNameNull>
+	<ScopeFrm_SaveFileFailed>Save File Failed!</ScopeFrm_SaveFileFailed>
+	<ScopeFrm_OpenFileSucceed>Open File [{0}] Succeed!</ScopeFrm_OpenFileSucceed>
+	<ScopeFrm_WordNotConfig>Not Be Configed</ScopeFrm_WordNotConfig>
+	<ScopeFrm_SendStopSampleCommandFailed>Send Stop Sample Command Failed!</ScopeFrm_SendStopSampleCommandFailed>
+	<ScopeFrm_OpenPortFailed>Open Port {0} Failed!</ScopeFrm_OpenPortFailed>
+	<ScopeFrm_OpenPortSucceed>Open Port {0} Succeed!</ScopeFrm_OpenPortSucceed>
+	<ScopeFrm_ClosePortSucceed>Close Port Succeed!</ScopeFrm_ClosePortSucceed>
+	<ScopeFrm_ClosePortFailed>Close Port Failed!</ScopeFrm_ClosePortFailed>
+	<ScopeFrm_SaveHistoryDataSucceed>History Data Saved Succeed!</ScopeFrm_SaveHistoryDataSucceed>
+
+	<CurveDefineFrm_ChooseCurveBeforeDownloadCurveParameters>Choose Curve Before Download Curve Parameters</CurveDefineFrm_ChooseCurveBeforeDownloadCurveParameters>
+	<CurveDefineFrm_SendSomeParameterFailed>Send [{0}]ed Parameter Failed!</CurveDefineFrm_SendSomeParameterFailed>
+	<CurveDefineFrm_SendMovementParameterSucceed>Send Profile Parameters Succeed!</CurveDefineFrm_SendMovementParameterSucceed>
+	<CurveDefineFrm_PleaseDefineMasterAndSlave>Please Define Master Axis And Slave Axis \r\n</CurveDefineFrm_PleaseDefineMasterAndSlave>
+	<CurveDefineFrm_DefineGearRatio>Please Define Gear Ratio \r\n</CurveDefineFrm_DefineGearRatio>
+	<CurveDefineFrm_SendGearParameterSucceed>Send Gear Parameter Succeed, Master {0}, Slave {1} \r\n</CurveDefineFrm_SendGearParameterSucceed>
+	<CurveDefineFrm_SendGearParameterFailed>Send Gear Parameter Failed!</CurveDefineFrm_SendGearParameterFailed>
+	<CurveDefineFrm_ChooseSlaveAxis>Choose Slave Axis \r\n</CurveDefineFrm_ChooseSlaveAxis>
+	<CurveDefineFrm_SendGearInCommandSucceed>Send Gear In Command Succeed!</CurveDefineFrm_SendGearInCommandSucceed>
+	<CurveDefineFrm_SendGearInCommandFailed>Send Gear In Command Failed!</CurveDefineFrm_SendGearInCommandFailed>
+	<CurveDefineFrm_SendGearOutCommandSucceed>Send Gear Out Command Succeed!</CurveDefineFrm_SendGearOutCommandSucceed>
+	<CurveDefineFrm_SendGearOutCommandFailed>Send Gear Out Command Failed!</CurveDefineFrm_SendGearOutCommandFailed>
+	<CurveDefineFrm_SendCamInCommandFailed>Send Cam In Command Failed!</CurveDefineFrm_SendCamInCommandFailed>
+	<CurveDefineFrm_SendCamInCommandSucceed>Send Cam In Command Succeed!</CurveDefineFrm_SendCamInCommandSucceed>
+	<CurveDefineFrm_SendCamOutCommandFailed>Send Cam Out Command Failed!</CurveDefineFrm_SendCamOutCommandFailed>
+	<CurveDefineFrm_SendCamOutCommandSucceed>Send Cam Out Command Succeed！</CurveDefineFrm_SendCamOutCommandSucceed>
+	<CurveDefineFrm_NotAllParameterDefined>Not All Paramters Defined!</CurveDefineFrm_NotAllParameterDefined>
+	<CurveDefineFrm_DefineMovementPointCntAndT>Movement Define Point Count:{0}, Period:{1}!</CurveDefineFrm_DefineMovementPointCntAndT>
+	<CurveDefineFrm_DataError>Parameter Error</CurveDefineFrm_DataError>
+	<CurveDefineFrm_SetCamParameterFailed>Set Cam Parameters Failed!</CurveDefineFrm_SetCamParameterFailed>
+	<CurveDefineFrm_SetCamParameterSucceed>Set Cam Parameters Succeed!</CurveDefineFrm_SetCamParameterSucceed>
+	<CurveDefineFrm_CamProfileEmpty>Cam Profile Empty, Can Not Be Saved!</CurveDefineFrm_CamProfileEmpty>
+
+	<ComParaFrm_WordComTable>ComTable</ComParaFrm_WordComTable>
+	<ComParaFrm_WordCom>Com</ComParaFrm_WordCom>
+	<ComParaFrm_WordEnable>Enable</ComParaFrm_WordEnable>
+	<ComParaFrm_WordDisable>Disable</ComParaFrm_WordDisable>
+	<ComParaFrm_SetParameterFailed>Set Parameters Failed!</ComParaFrm_SetParameterFailed>
+	<ComParaFrm_ConnectMCCard>Please Connect USART!</ComParaFrm_ConnectMCCard>
+	<ComParaFrm_ParameterIndxeError>Parameter Index Error!</ComParaFrm_ParameterIndxeError>
+	<ComParaFrm_EnablePlatformCompensate>Enable Platform Compensate Succeed!</ComParaFrm_EnablePlatformCompensate>
+	<ComParaFrm_EnablePlatformCompensateFailed>Enable Platform Compensate Failed!</ComParaFrm_EnablePlatformCompensateFailed>
+	<ComParaFrm_DisablePlatformCompensate>Disable Platform Compensate Succeed!</ComParaFrm_DisablePlatformCompensate>
+	<ComParaFrm_DisablePlatformCompensateFailed>Disable Platform Compensate Failed!</ComParaFrm_DisablePlatformCompensateFailed>
+
+	<CacPulseDLFrm_DataFormatError>Data Format Error, Check It Out!</CacPulseDLFrm_DataFormatError>
+
+	<AbsEncFrm_EncoderFormatError>Ecoder Format Error</AbsEncFrm_EncoderFormatError>
+	<AbsEncFrm_CheckFrequencyParamereUnitIsHz>CheckFrequencyParameterUnit(HZ)</AbsEncFrm_CheckFrequencyParamereUnitIsHz>
+	<AbsEncFrm_ValueTooLargeCheckInput>Value Too Large, Please Check Input</AbsEncFrm_ValueTooLargeCheckInput>
+
+	<TMC2209Frm_ReadSomeRegError>Read {0}ed Reg Failed!</TMC2209Frm_ReadSomeRegError>
+	<TMC2209Frm_NotDefineMicroSteps200StepPerTurn>Not Define MicroStep, 200 Step Per Turn!</TMC2209Frm_NotDefineMicroSteps200StepPerTurn>
+	<TMC2209Frm_ReadMicroOkButFormatInValidPleaseReSet>Read MicroStep Paramter Succeed[{0}], But Format Invalid, Please ReSet It!</TMC2209Frm_ReadMicroOkButFormatInValidPleaseReSet>
+	<TMC2209Frm_ReadMicroStepFailed>Read MicroStep Parameter Failed!</TMC2209Frm_ReadMicroStepFailed>
+	<TMC2209Frm_ReadWorkCurrentFailed>Read Work Current Reg Failed!</TMC2209Frm_ReadWorkCurrentFailed>
+	<TMC2209Frm_ReadHoldCurrentFailed>Read Hold Current Reg Failed!</TMC2209Frm_ReadHoldCurrentFailed>
+	<TMC2209Frm_InputFunctionParameterError>Input {0} Function Config Parameter Error, Please Config Again!</TMC2209Frm_InputFunctionParameterError>
+	<TMC2209Frm_ReadInputFunctionParameterFailed>Read Input Function Config Parameter Failed!</TMC2209Frm_ReadInputFunctionParameterFailed>
+	<TMC2209Frm_RegValueFormatError>Reg Value Format Error, Not[{0}]Format！</TMC2209Frm_RegValueFormatError>
+	<TMC2209Frm_WriteRegSucceed>Write {0} Reg Succeed!</TMC2209Frm_WriteRegSucceed>
+	<TMC2209Frm_WriteRegFailed>Write {0} Reg Failed!</TMC2209Frm_WriteRegFailed>
+	<TMC2209Frm_EnableDriverFailed>Enable Driver Failed!</TMC2209Frm_EnableDriverFailed>
+	<TMC2209Frm_DisableDriverFailed>Disable Driver Failed!</TMC2209Frm_DisableDriverFailed>
+	<TMC2209Frm_SaveRegValueFailed>Save Register Value Faile!</TMC2209Frm_SaveRegValueFailed>
+	<TMC2209Frm_SaveParameterToBoardFailed>Save Parameter to Board Failed!</TMC2209Frm_SaveParameterToBoardFailed>
+	<TMC2209Frm_ResetDriverFailed>Reset Driver Failed!</TMC2209Frm_ResetDriverFailed>
+	<TMC2209Frm_SetMicroStepFailed>Set Driver MicroStep Parameter Failed!</TMC2209Frm_SetMicroStepFailed>
+	<TMC2209Frm_SetInputFunctionFailed>Set Input [{0}] Function Paramter Failed!</TMC2209Frm_SetInputFunctionFailed>
+	<TMC2209Frm_SetWorkCurrentFailed>Set Work Current Failed!</TMC2209Frm_SetWorkCurrentFailed>
+	<TMC2209Frm_SetHoldCurrentFailed>Set Hold Current Failed!</TMC2209Frm_SetHoldCurrentFailed>
+
+</English>
