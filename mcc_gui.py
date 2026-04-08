@@ -12,14 +12,17 @@ MCC 运动控制卡 - PyQt6 最简控制界面
 生产环境版本 - 必须依赖 mcc_driver.py
 """
 
+import os
+import sqlite3
 import sys
-from typing import Optional, List
+import tempfile
+from typing import List, Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
     QStatusBar, QDoubleSpinBox, QFrame, QRadioButton, QButtonGroup,
-    QMessageBox, QMenuBar
+    QMessageBox, QMenuBar, QListWidget
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
@@ -130,32 +133,159 @@ class PositionPlot(QWidget):
 
 class MCCMainWindow(QMainWindow):
     """MCC 主窗口"""
-    
+
+    AXIS_NAMES = ["X", "Y", "Z", "A", "B", "C"]
+    ABC_AXIS_INDICES = (3, 4, 5)
+    RECORD_MOVE_SPEED = 2.0
+    RECORD_MOVE_ACCEL = 50.0
+    RECORD_DB_PREFIX = "mcc-position-record-"
+
     def __init__(self):
         super().__init__()
-        
+
         # 日志回调函数 (在 info_text 创建后使用)
         def log_callback(level: str, msg: str):
             # Verbose 模式显示所有日志，非 verbose 只显示 INFO/WARN/ERROR
             verbose = self.verbose_check.isChecked() if hasattr(self, 'verbose_check') else True
             if verbose or level in ("INFO", "WARN", "ERROR"):
                 self.log_info(f"[{level}] {msg}")
-        
+
         self.driver = MCCDriver(log_callback=log_callback)
         self.jog_mode = False
         self.speed_override = 0.0
-        
+
         # 位置缓存
         self.axis_pos = [0.0] * 6
         self.axis_spd = [0.0] * 6
-        
+
+        # 临时位置记录库
+        self.record_db_path: Optional[str] = None
+        self.record_db_conn: Optional[sqlite3.Connection] = None
+        self.init_record_db()
+
         # 初始化 UI
         self.init_ui()
-        
+        self.refresh_record_list()
+
         # 定时器 - 状态更新
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_status)
         self.update_timer.setInterval(200)  # 200ms
+
+    def init_record_db(self):
+        """初始化临时位置记录数据库。"""
+        db_fd, db_path = tempfile.mkstemp(
+            prefix=self.RECORD_DB_PREFIX,
+            suffix=".sqlite3",
+        )
+        os.close(db_fd)
+        self.record_db_path = db_path
+        self.record_db_conn = sqlite3.connect(db_path)
+        self.record_db_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS abc_position_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                axis_a REAL NOT NULL,
+                axis_b REAL NOT NULL,
+                axis_c REAL NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.record_db_conn.commit()
+
+    def cleanup_record_db(self):
+        """关闭并删除临时位置记录数据库。"""
+        if self.record_db_conn is not None:
+            try:
+                self.record_db_conn.execute("DELETE FROM abc_position_records")
+                self.record_db_conn.commit()
+            except sqlite3.Error:
+                pass
+            self.record_db_conn.close()
+            self.record_db_conn = None
+
+        if self.record_db_path and os.path.exists(self.record_db_path):
+            try:
+                os.remove(self.record_db_path)
+            except OSError:
+                pass
+            self.record_db_path = None
+
+    def get_abc_positions(self) -> Optional[List[float]]:
+        """获取当前 A/B/C 轴位置。"""
+        if not self.driver.connected:
+            return None
+
+        positions = self.driver.get_axis_pos(0xFF)
+        if not positions or len(positions) < 6:
+            return None
+
+        self.axis_pos = list(positions)
+        return [self.axis_pos[index] for index in self.ABC_AXIS_INDICES]
+
+    def save_abc_record(self, positions: List[float]) -> int:
+        """保存一条 A/B/C 位置记录并返回记录序号。"""
+        if self.record_db_conn is None:
+            raise RuntimeError("位置记录数据库未初始化")
+
+        cursor = self.record_db_conn.execute(
+            """
+            INSERT INTO abc_position_records (axis_a, axis_b, axis_c)
+            VALUES (?, ?, ?)
+            """,
+            tuple(positions),
+        )
+        self.record_db_conn.commit()
+        return int(cursor.lastrowid)
+
+    def fetch_record_targets(self, record_id: int) -> Optional[List[float]]:
+        """按记录序号读取 A/B/C 目标位置。"""
+        if self.record_db_conn is None:
+            return None
+
+        row = self.record_db_conn.execute(
+            """
+            SELECT axis_a, axis_b, axis_c
+            FROM abc_position_records
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return [float(value) for value in row]
+
+    def refresh_record_list(self):
+        """刷新位置记录列表。"""
+        if not hasattr(self, "record_list") or self.record_db_conn is None:
+            return
+
+        rows = self.record_db_conn.execute(
+            "SELECT id FROM abc_position_records ORDER BY id"
+        ).fetchall()
+        self.record_list.clear()
+        for record_id, in rows:
+            self.record_list.addItem(str(record_id))
+
+    def move_to_recorded_abc_position(self, targets: List[float]) -> bool:
+        """将 A/B/C 轴移动到记录位置。"""
+        current_positions = self.driver.get_axis_pos(0xFF)
+        if not current_positions or len(current_positions) < 6:
+            return False
+
+        full_positions = list(current_positions)
+        axis_en = [0] * 6
+        speeds = [0.0] * 6
+        accels = [0.0] * 6
+
+        for axis_index, target in zip(self.ABC_AXIS_INDICES, targets):
+            axis_en[axis_index] = 1
+            full_positions[axis_index] = target
+            speeds[axis_index] = self.RECORD_MOVE_SPEED
+            accels[axis_index] = self.RECORD_MOVE_ACCEL
+
+        return self.driver.group_abs_move_ptp(axis_en, full_positions, speeds, accels)
     
     def init_ui(self):
         """初始化界面"""
@@ -232,6 +362,10 @@ class MCCMainWindow(QMainWindow):
         plot_layout.addWidget(self.position_plot)
         right_layout.addWidget(plot_group, stretch=2)
         
+        # --- 位置记录 ---
+        record_group = self.create_record_group()
+        right_layout.addWidget(record_group, stretch=1)
+
         # --- IO 状态 ---
         io_group = self.create_io_status()
         right_layout.addWidget(io_group, stretch=1)
@@ -479,6 +613,25 @@ class MCCMainWindow(QMainWindow):
         
         return group
     
+    def create_record_group(self) -> QGroupBox:
+        """创建 A/B/C 位置记录组。"""
+        group = QGroupBox("ABC位置记录")
+        layout = QVBoxLayout(group)
+
+        self.btn_record_position = QPushButton("记录当前位置")
+        self.btn_record_position.clicked.connect(self.on_record_position)
+        layout.addWidget(self.btn_record_position)
+
+        self.record_list = QListWidget()
+        self.record_list.itemDoubleClicked.connect(self.on_record_item_double_clicked)
+        layout.addWidget(self.record_list)
+
+        tip_label = QLabel("双击序号跳转到对应 ABC 位置")
+        tip_label.setStyleSheet("color: #aaaaaa;")
+        layout.addWidget(tip_label)
+
+        return group
+
     def create_io_status(self) -> QGroupBox:
         """创建IO状态组"""
         group = QGroupBox("IO状态")
@@ -712,6 +865,46 @@ class MCCMainWindow(QMainWindow):
         else:
             self.log_info("未连接")
     
+    def on_record_position(self):
+        """记录当前 A/B/C 轴位置。"""
+        positions = self.get_abc_positions()
+        if positions is None:
+            self.log_info("未连接或无法读取 ABC 位置，记录失败")
+            return
+
+        record_id = self.save_abc_record(positions)
+        self.refresh_record_list()
+        self.log_info(
+            f"已记录 ABC 位置 #{record_id}: "
+            f"A={positions[0]:.3f}, B={positions[1]:.3f}, C={positions[2]:.3f}"
+        )
+
+    def on_record_item_double_clicked(self, item):
+        """双击记录项后跳转到对应 A/B/C 位置。"""
+        if not self.driver.connected:
+            self.log_info("未连接，无法跳转到记录位置")
+            return
+
+        try:
+            record_id = int(item.text())
+        except ValueError:
+            self.log_info(f"无效的记录序号: {item.text()}")
+            return
+
+        targets = self.fetch_record_targets(record_id)
+        if targets is None:
+            self.log_info(f"未找到记录 #{record_id}")
+            return
+
+        if self.move_to_recorded_abc_position(targets):
+            self.log_info(
+                f"跳转到记录 #{record_id}: "
+                f"A={targets[0]:.3f}, B={targets[1]:.3f}, C={targets[2]:.3f}, "
+                f"speed={self.RECORD_MOVE_SPEED:.1f}"
+            )
+        else:
+            self.log_info(f"跳转到记录 #{record_id} 失败")
+
     def on_read_params(self):
         """读取参数"""
         if self.driver.connected:
@@ -753,6 +946,7 @@ class MCCMainWindow(QMainWindow):
         if self.cb_update_pos.isChecked():
             pos = self.driver.get_axis_pos(0xFF)
             if pos:
+                self.axis_pos = list(pos)
                 for i in range(6):
                     self.pos_labels[i].setText(f"{pos[i]:.3f}")
                 # 更新绘图板
@@ -795,6 +989,7 @@ class MCCMainWindow(QMainWindow):
         self.update_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
+        self.cleanup_record_db()
         event.accept()
 
 
