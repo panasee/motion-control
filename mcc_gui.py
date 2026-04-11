@@ -26,109 +26,181 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
+from PyQt6.QtCore import QRectF
 
 # 生产环境：必须导入真正的驱动
-from mcc_driver import MCCDriver, SERIAL_AVAILABLE
+from mcc_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
 
 
 class PositionPlot(QWidget):
-    """位置绘图板 - 显示6轴当前位置柱状图"""
-    
+    """位置绘图板，显示 AB 十字坐标系和 Z 一维坐标轴。"""
+
+    AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2, "A": 3, "B": 4, "C": 5}
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(200, 150)
-        self.positions = [0.0] * 6  # X, Y, Z, A, B, C
-        self.axis_names = ["X", "Y", "Z", "A", "B", "C"]
-        self.colors = [
-            QColor(42, 130, 218),  # X - 蓝
-            QColor(50, 205, 50),   # Y - 绿
-            QColor(255, 165, 0),   # Z - 橙
-            QColor(255, 69, 0),    # A - 红
-            QColor(148, 0, 211),   # B - 紫
-            QColor(0, 206, 209),   # C - 青
+        self.setMinimumSize(320, 220)
+        self.positions = [0.0] * 6
+        self.origin_ab = [0.0, 0.0]
+        self.origin_z = 0.0
+        self.axis_colors = {
+            "A": QColor(255, 99, 71),
+            "B": QColor(123, 104, 238),
+            "Z": QColor(255, 165, 0),
+        }
+        self._ab_origin_hit_rect = QRectF()
+        self._z_origin_hit_rect = QRectF()
+
+    def set_plot_state(self, positions: List[float], soft_limits: dict):
+        self.positions = list(positions)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if self._ab_origin_hit_rect.contains(event.position()):
+            self.origin_ab = [self.positions[self.AXIS_INDEX["A"]], self.positions[self.AXIS_INDEX["B"]]]
+            self.update()
+            return
+        if self._z_origin_hit_rect.contains(event.position()):
+            self.origin_z = self.positions[self.AXIS_INDEX["Z"]]
+            self.update()
+            return
+        super().mousePressEvent(event)
+
+    def _compute_ab_range(self) -> float:
+        values = [
+            abs(self.origin_ab[0]), abs(self.origin_ab[1]),
+            abs(self.positions[self.AXIS_INDEX["A"]]), abs(self.positions[self.AXIS_INDEX["B"]]),
+            abs(self.positions[self.AXIS_INDEX["C"]]),
         ]
-        self.max_range = 100.0  # 默认范围，会动态调整
-        
-    def set_positions(self, positions: List[float]):
-        """更新位置数据"""
-        self.positions = positions
-        # 动态调整范围
-        max_pos = max(abs(p) for p in positions) if positions else 0
-        self.max_range = max(max_pos * 1.2, 100.0)  # 至少100，或者比最大值大20%
-        self.update()  # 触发重绘
-        
+        return max(10.0, max(values) * 1.25)
+
+    def _compute_z_range(self) -> float:
+        return max(10.0, max(abs(self.origin_z), abs(self.positions[self.AXIS_INDEX["Z"]])) * 1.25)
+
+    def _draw_arrow(self, painter: QPainter, x1: int, y1: int, x2: int, y2: int):
+        painter.drawLine(x1, y1, x2, y2)
+        if x1 == x2:
+            direction = 1 if y2 > y1 else -1
+            painter.drawLine(x2, y2, x2 - 6, y2 - 10 * direction)
+            painter.drawLine(x2, y2, x2 + 6, y2 - 10 * direction)
+        else:
+            direction = 1 if x2 > x1 else -1
+            painter.drawLine(x2, y2, x2 - 10 * direction, y2 - 6)
+            painter.drawLine(x2, y2, x2 - 10 * direction, y2 + 6)
+
+    def _draw_star(self, painter: QPainter, x: int, y: int, radius: int = 4):
+        points = []
+        for i in range(10):
+            angle_deg = -90 + i * 36
+            r = radius if i % 2 == 0 else radius * 0.45
+            angle = angle_deg * 3.1415926 / 180.0
+            points.append((int(x + r * __import__('math').cos(angle)), int(y + r * __import__('math').sin(angle))))
+        for i in range(10):
+            x1, y1 = points[i]
+            x2, y2 = points[(i + 1) % 10]
+            painter.drawLine(x1, y1, x2, y2)
+
+    def _draw_ab_axes(self, painter: QPainter, rect: QRectF):
+        left, right = int(rect.left()), int(rect.right())
+        top, bottom = int(rect.top()), int(rect.bottom())
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+        axis_range = self._compute_ab_range()
+        current_a = self.positions[self.AXIS_INDEX["A"]]
+        current_b = self.positions[self.AXIS_INDEX["B"]]
+
+        painter.setPen(QPen(self.axis_colors["A"], 2))
+        self._draw_arrow(painter, left + 8, center_y, right - 12, center_y)
+        painter.setPen(QPen(self.axis_colors["B"], 2))
+        self._draw_arrow(painter, center_x, top + 8, center_x, bottom - 12)
+
+        target_pixels = max(60.0, min(rect.width(), rect.height()) * 0.30)
+        delta_a = -(current_a - self.origin_ab[0])
+        delta_b = -(current_b - self.origin_ab[1])
+        delta_norm = (delta_a ** 2 + delta_b ** 2) ** 0.5
+        pixels_per_unit = target_pixels / delta_norm if delta_norm > 1e-6 else min(rect.width(), rect.height()) * 0.06
+
+        origin_x = center_x
+        origin_y = center_y
+        point_x = int(origin_x + delta_a * pixels_per_unit)
+        point_y = int(origin_y + delta_b * pixels_per_unit)
+
+        painter.setPen(QPen(QColor(220, 220, 220), 1))
+        painter.drawLine(origin_x, origin_y, point_x, point_y)
+        painter.setBrush(QBrush(QColor(240, 240, 240)))
+        painter.drawEllipse(origin_x - 3, origin_y - 3, 6, 6)
+        self._ab_origin_hit_rect = QRectF(origin_x - 14, origin_y - 14, 28, 28)
+
+        painter.setPen(QPen(QColor(255, 215, 0), 2))
+        self._draw_star(painter, point_x, point_y)
+
+        dist = ((current_a - self.origin_ab[0]) ** 2 + (current_b - self.origin_ab[1]) ** 2) ** 0.5
+        mid_x = (origin_x + point_x) // 2 + 8
+        mid_y = (origin_y + point_y) // 2 - 6
+
+        painter.setPen(QPen(QColor(220, 220, 220), 1))
+        painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        origin_label_x = max(left + 6, origin_x - 72)
+        origin_label_y = max(top + 16, origin_y - 10)
+        point_label_x = point_x + 10 if point_x <= origin_x else point_x - 82
+        point_label_x = max(left + 6, min(right - 82, point_label_x))
+        point_label_y = point_y + 18 if abs(point_y - origin_y) < 22 else point_y - 8
+        point_label_y = max(top + 16, min(bottom - 6, point_label_y))
+        len_label_x = max(left + 6, min(right - 58, mid_x))
+        len_label_y = max(top + 28, min(bottom - 20, mid_y))
+
+        painter.drawText(origin_label_x, origin_label_y, f"({self.origin_ab[0]:.1f}, {self.origin_ab[1]:.1f})")
+        painter.drawText(point_label_x, point_label_y, f"({current_a:.1f}, {current_b:.1f})")
+        painter.drawText(len_label_x, len_label_y, f"L={dist:.2f}")
+
+    def _draw_z_axis(self, painter: QPainter, rect: QRectF):
+        left, right = int(rect.left()), int(rect.right())
+        top, bottom = int(rect.top()), int(rect.bottom())
+        center_x = (left + right) // 2
+        axis_range = self._compute_z_range()
+        current_z = self.positions[self.AXIS_INDEX["Z"]]
+
+        painter.setPen(QPen(self.axis_colors["Z"], 2))
+        self._draw_arrow(painter, center_x, top + 12, center_x, bottom - 10)
+
+        delta_z = current_z - self.origin_z
+        axis_half = max(40.0, rect.height() * 0.30)
+        pixels_per_unit = axis_half / abs(delta_z) if abs(delta_z) > 1e-6 else rect.height() * 0.06
+        origin_y = (top + bottom) // 2
+        point_y = int(origin_y + delta_z * pixels_per_unit)
+
+        painter.setPen(QPen(QColor(220, 220, 220), 1))
+        painter.drawLine(center_x, origin_y, center_x, point_y)
+        painter.setBrush(QBrush(QColor(240, 240, 240)))
+        painter.drawEllipse(center_x - 3, origin_y - 3, 6, 6)
+        self._z_origin_hit_rect = QRectF(center_x - 14, origin_y - 14, 28, 28)
+
+        painter.setPen(QPen(QColor(255, 215, 0), 2))
+        self._draw_star(painter, center_x, point_y)
+
+        painter.setPen(QPen(QColor(220, 220, 220), 1))
+        painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        painter.drawText(center_x + 6, top + 14, "Z")
+        origin_label_y = max(top + 26, origin_y - 8)
+        point_label_y = point_y + 18 if abs(point_y - origin_y) < 22 else point_y - 8
+        point_label_y = max(top + 38, min(bottom - 8, point_label_y))
+        len_label_y = max(top + 52, min(bottom - 20, (origin_y + point_y) // 2))
+        painter.drawText(center_x + 6, origin_label_y, f"({self.origin_z:.1f})")
+        painter.drawText(center_x + 6, point_label_y, f"({current_z:.1f})")
+        painter.drawText(center_x + 10, len_label_y, f"L={abs(current_z - self.origin_z):.2f}")
+
     def paintEvent(self, event):
-        """绘制柱状图"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+        painter.fillRect(self.rect(), QColor(30, 30, 30))
+
         width = self.width()
         height = self.height()
-        
-        # 背景
-        painter.fillRect(0, 0, width, height, QColor(30, 30, 30))
-        
-        # 绘制区域边距
-        margin_left = 30
-        margin_right = 10
-        margin_top = 20
-        margin_bottom = 25
-        
-        plot_width = width - margin_left - margin_right
-        plot_height = height - margin_top - margin_bottom
-        
-        if plot_width <= 0 or plot_height <= 0:
-            return
-        
-        bar_width = plot_width / 6 - 8  # 每个柱子宽度，留间隙
-        bar_gap = 8
-        
-        # 绘制零线
-        painter.setPen(QPen(QColor(100, 100, 100), 1))
-        zero_y = margin_top + plot_height / 2
-        painter.drawLine(margin_left, int(zero_y), width - margin_right, int(zero_y))
-        
-        # 绘制刻度线
-        painter.setPen(QPen(QColor(80, 80, 80), 1))
-        for i in range(5):
-            y = margin_top + plot_height * i / 4
-            painter.drawLine(margin_left, int(y), width - margin_right, int(y))
-        
-        # 绘制刻度值
-        painter.setPen(QPen(QColor(150, 150, 150), 1))
-        painter.setFont(QFont("Arial", 8))
-        for i, val in enumerate([self.max_range, self.max_range/2, 0, -self.max_range/2, -self.max_range]):
-            y = margin_top + plot_height * i / 4
-            painter.drawText(2, int(y + 4), f"{val:.0f}")
-        
-        # 绘制柱状图
-        for i, pos in enumerate(self.positions):
-            x = margin_left + i * (bar_width + bar_gap) + bar_gap / 2
-            
-            # 柱子高度（正值向上，负值向下）
-            bar_height = abs(pos) / self.max_range * (plot_height / 2)
-            bar_height = min(bar_height, plot_height / 2 - 2)  # 不超过半区
-            
-            color = self.colors[i]
-            painter.setBrush(QBrush(color))
-            painter.setPen(QPen(color.darker(120), 1))
-            
-            if pos >= 0:
-                # 正值：从零线向上
-                painter.drawRect(int(x), int(zero_y - bar_height), int(bar_width), int(bar_height))
-            else:
-                # 负值：从零线向下
-                painter.drawRect(int(x), int(zero_y), int(bar_width), int(bar_height))
-            
-            # 绘制轴名
-            painter.setPen(QPen(QColor(200, 200, 200), 1))
-            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-            painter.drawText(int(x + bar_width/2 - 5), int(height - 8), self.axis_names[i])
-            
-            # 绘制数值
-            painter.setFont(QFont("Arial", 8))
-            val_y = zero_y - bar_height - 12 if pos >= 0 else zero_y + bar_height + 12
-            painter.drawText(int(x + bar_width/2 - 15), int(val_y), f"{pos:.1f}")
+        ab_rect = QRectF(16, 12, max(180, width - 100), max(120, height - 24))
+        z_rect = QRectF(width - 72, 20, 52, max(100, height - 40))
+
+        self._draw_ab_axes(painter, ab_rect)
+        self._draw_z_axis(painter, z_rect)
 
 
 class MCCMainWindow(QMainWindow):
@@ -139,6 +211,7 @@ class MCCMainWindow(QMainWindow):
     RECORD_MOVE_SPEED = 2.0
     RECORD_MOVE_ACCEL = 50.0
     RECORD_DB_PREFIX = "mcc-position-record-"
+    ZERO_RESET_AXES = tuple(range(6))
 
     def __init__(self):
         super().__init__()
@@ -239,6 +312,27 @@ class MCCMainWindow(QMainWindow):
         self.record_db_conn.commit()
         return int(cursor.lastrowid)
 
+    def get_soft_limit_map(self) -> dict:
+        """读取 XYAB 软限位，用于绘图。"""
+        axis_map = {"X": 0, "Y": 1, "A": 3, "B": 4}
+        limit_map = {}
+        for axis_name, axis_index in axis_map.items():
+            neg = self.driver.read_para(axis_index, int(ParaIndex.SoftLimitNeg))
+            pos = self.driver.read_para(axis_index, int(ParaIndex.SoftLimitPos))
+            if neg is None or pos is None or neg == pos:
+                current = self.axis_pos[axis_index] if axis_index < len(self.axis_pos) else 0.0
+                fallback = max(abs(current), 100.0)
+                limit_map[axis_name] = (-fallback, fallback)
+            else:
+                lower = float(min(neg, pos))
+                upper = float(max(neg, pos))
+                limit_map[axis_name] = (lower, upper)
+        return limit_map
+
+    def refresh_plot_state(self):
+        """刷新右上角位置图的状态。"""
+        self.position_plot.set_plot_state(self.axis_pos, self.get_soft_limit_map())
+
     def fetch_record_targets(self, record_id: int) -> Optional[List[float]]:
         """按记录序号读取 A/B/C 目标位置。"""
         if self.record_db_conn is None:
@@ -255,6 +349,14 @@ class MCCMainWindow(QMainWindow):
         if row is None:
             return None
         return [float(value) for value in row]
+
+    def clear_record_db(self):
+        """清空当前会话中的 ABC 位置记录。"""
+        if self.record_db_conn is None:
+            return
+
+        self.record_db_conn.execute("DELETE FROM abc_position_records")
+        self.record_db_conn.commit()
 
     def refresh_record_list(self):
         """刷新位置记录列表。"""
@@ -348,6 +450,10 @@ class MCCMainWindow(QMainWindow):
         # --- 回零控制 ---
         home_group = self.create_home_control()
         middle_layout.addWidget(home_group)
+
+        # --- 坐标清零 ---
+        zero_group = self.create_zero_control()
+        middle_layout.addWidget(zero_group)
         
         main_layout.addWidget(middle_panel, stretch=1)
         
@@ -359,16 +465,19 @@ class MCCMainWindow(QMainWindow):
         self.position_plot = PositionPlot()
         plot_group = QGroupBox("位置图示")
         plot_layout = QVBoxLayout(plot_group)
+        plot_layout.setContentsMargins(6, 10, 6, 6)
         plot_layout.addWidget(self.position_plot)
-        right_layout.addWidget(plot_group, stretch=2)
+        plot_group.setMaximumHeight(240)
+        right_layout.addWidget(plot_group, stretch=3)
         
         # --- 位置记录 ---
         record_group = self.create_record_group()
-        right_layout.addWidget(record_group, stretch=1)
+        right_layout.addWidget(record_group, stretch=2)
 
         # --- IO 状态 ---
         io_group = self.create_io_status()
-        right_layout.addWidget(io_group, stretch=1)
+        io_group.setMaximumHeight(110)
+        right_layout.addWidget(io_group, stretch=0)
         
         main_layout.addWidget(right_panel, stretch=1)
         
@@ -632,6 +741,21 @@ class MCCMainWindow(QMainWindow):
 
         return group
 
+    def create_zero_control(self) -> QGroupBox:
+        """创建坐标清零控制组。"""
+        group = QGroupBox("坐标清零")
+        layout = QVBoxLayout(group)
+
+        btn_zero = QPushButton("当前点坐标清零")
+        btn_zero.clicked.connect(self.on_zero_coordinates)
+        layout.addWidget(btn_zero)
+
+        tip_label = QLabel("重置 XYZABC 显示坐标为 0，不移动机械位置")
+        tip_label.setStyleSheet("color: #aaaaaa;")
+        layout.addWidget(tip_label)
+
+        return group
+
     def create_io_status(self) -> QGroupBox:
         """创建IO状态组"""
         group = QGroupBox("IO状态")
@@ -660,6 +784,8 @@ class MCCMainWindow(QMainWindow):
             self.io_indicators.append(indicator)
         
         layout.addLayout(io_grid, 2, 0, 1, 2)
+        layout.setVerticalSpacing(4)
+        group.setMaximumHeight(110)
         
         return group
     
@@ -905,6 +1031,31 @@ class MCCMainWindow(QMainWindow):
         else:
             self.log_info(f"跳转到记录 #{record_id} 失败")
 
+    def on_zero_coordinates(self):
+        """将当前点的 XYZABC 逻辑坐标清零，不移动机械位置。"""
+        if not self.driver.connected:
+            self.log_info("未连接，无法执行坐标清零")
+            return
+
+        failed_axes = []
+        for axis in self.ZERO_RESET_AXES:
+            if not self.driver.reset_coordinate(axis, 0.0, absolute=True):
+                failed_axes.append(self.AXIS_NAMES[axis])
+
+        if failed_axes:
+            self.log_info(f"坐标清零失败轴: {', '.join(failed_axes)}")
+            return
+
+        self.axis_pos = [0.0] * 6
+        for label in self.pos_labels:
+            label.setText("0.000")
+        self.refresh_plot_state()
+
+        # 位置记录使用的是逻辑坐标，清零后旧记录会落在旧坐标系里，必须清空。
+        self.clear_record_db()
+        self.refresh_record_list()
+        self.log_info("XYZABC 当前点坐标已清零，ABC 位置记录已同步清空")
+
     def on_read_params(self):
         """读取参数"""
         if self.driver.connected:
@@ -949,8 +1100,7 @@ class MCCMainWindow(QMainWindow):
                 self.axis_pos = list(pos)
                 for i in range(6):
                     self.pos_labels[i].setText(f"{pos[i]:.3f}")
-                # 更新绘图板
-                self.position_plot.set_positions(pos)
+                self.refresh_plot_state()
         
         # 更新速度
         if self.cb_update_spd.isChecked():
