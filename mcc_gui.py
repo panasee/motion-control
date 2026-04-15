@@ -212,6 +212,7 @@ class MCCMainWindow(QMainWindow):
     RECORD_MOVE_ACCEL = 50.0
     RECORD_DB_PREFIX = "mcc-position-record-"
     ZERO_RESET_AXES = tuple(range(6))
+    STATUS_UPDATE_INTERVAL_MS = 60
 
     def __init__(self):
         super().__init__()
@@ -226,6 +227,8 @@ class MCCMainWindow(QMainWindow):
         self.driver = MCCDriver(log_callback=log_callback)
         self.jog_mode = False
         self.speed_override = 0.0
+        self.active_jog_axes = set()
+        self.status_poll_phase = 0
 
         # 位置缓存
         self.axis_pos = [0.0] * 6
@@ -243,7 +246,7 @@ class MCCMainWindow(QMainWindow):
         # 定时器 - 状态更新
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_status)
-        self.update_timer.setInterval(200)  # 200ms
+        self.update_timer.setInterval(self.STATUS_UPDATE_INTERVAL_MS)
 
     def init_record_db(self):
         """初始化临时位置记录数据库。"""
@@ -678,9 +681,10 @@ class MCCMainWindow(QMainWindow):
         # 速度控制
         layout.addWidget(QLabel("手动速度:"), 7, 0)
         self.manual_spd = QDoubleSpinBox()
-        self.manual_spd.setRange(0, 1000)
+        self.manual_spd.setRange(0.001, 1000)
         self.manual_spd.setValue(5.0)
-        self.manual_spd.setDecimals(1)
+        self.manual_spd.setDecimals(3)
+        self.manual_spd.setSingleStep(0.001)
         layout.addWidget(self.manual_spd, 7, 1)
         
         # 急停和停止
@@ -895,7 +899,11 @@ class MCCMainWindow(QMainWindow):
     def on_jog_mode_changed(self, state):
         """Jog模式改变"""
         self.jog_mode = state == Qt.CheckState.Checked.value
-    
+        if not self.jog_mode and self.active_jog_axes:
+            for axis in list(self.active_jog_axes):
+                self.driver.para_stop(axis)
+            self.active_jog_axes.clear()
+
     def on_axis_neg(self, axis: int):
         """轴负方向"""
         if not self.driver.connected:
@@ -905,7 +913,8 @@ class MCCMainWindow(QMainWindow):
         if self.jog_mode:
             # Jog模式: 速度运动
             if self.driver.move_at_speed(axis, spd, 50.0):
-                self.log_info(f"轴{axis} 负向速度运动: {spd:.1f}")
+                self.active_jog_axes.add(axis)
+                self.log_info(f"轴{axis} 负向速度运动: {spd:.3f}")
         else:
             # 点动模式: 相对运动一小段距离
             dist = -1.0  # 1mm
@@ -921,7 +930,8 @@ class MCCMainWindow(QMainWindow):
         if self.jog_mode:
             # Jog模式: 速度运动
             if self.driver.move_at_speed(axis, spd, 50.0):
-                self.log_info(f"轴{axis} 正向速度运动: {spd:.1f}")
+                self.active_jog_axes.add(axis)
+                self.log_info(f"轴{axis} 正向速度运动: {spd:.3f}")
         else:
             # 点动模式: 相对运动一小段距离
             dist = 1.0  # 1mm
@@ -934,7 +944,9 @@ class MCCMainWindow(QMainWindow):
             return
         
         if self.jog_mode:
-            self.driver.para_stop(axis)
+            self.active_jog_axes.discard(axis)
+            self.driver.emergency_stop(axis)
+            self.spd_labels[axis].setText("0.0")
     
     def on_home(self, axis: int):
         """回零"""
@@ -1092,25 +1104,27 @@ class MCCMainWindow(QMainWindow):
         """更新状态"""
         if not self.driver.connected:
             return
-        
-        # 更新位置
-        if self.cb_update_pos.isChecked():
+
+        poll_cycle = ["pos", "spd"] if self.active_jog_axes else ["pos", "spd", "io", "run"]
+        poll_target = poll_cycle[self.status_poll_phase % len(poll_cycle)]
+        self.status_poll_phase = (self.status_poll_phase + 1) % len(poll_cycle)
+
+        if poll_target == "pos" and self.cb_update_pos.isChecked():
             pos = self.driver.get_axis_pos(0xFF)
             if pos:
                 self.axis_pos = list(pos)
                 for i in range(6):
                     self.pos_labels[i].setText(f"{pos[i]:.3f}")
                 self.refresh_plot_state()
-        
-        # 更新速度
-        if self.cb_update_spd.isChecked():
+
+        if poll_target == "spd" and self.cb_update_spd.isChecked():
             spd = self.driver.get_axis_spd(0xFF)
             if spd:
+                self.axis_spd = list(spd)
                 for i in range(6):
                     self.spd_labels[i].setText(f"{spd[i]:.1f}")
-        
-        # 更新IO状态
-        if self.cb_update_io.isChecked():
+
+        if poll_target == "io" and self.cb_update_io.isChecked():
             inp = self.driver.get_input(0)
             if inp is not None:
                 self.input_label.setText(f"0x{inp:04X}")
@@ -1124,15 +1138,15 @@ class MCCMainWindow(QMainWindow):
             if out is not None:
                 self.output_label.setText(f"0x{out:04X}")
 
-        # 更新运行状态
-        state = self.driver.get_run_state()
-        if state is not None:
-            if state == 0:
-                self.run_label.setText("停止")
-                self.run_label.setStyleSheet("")
-            else:
-                self.run_label.setText("运行中")
-                self.run_label.setStyleSheet("color: green;")
+        if poll_target == "run":
+            state = self.driver.get_run_state()
+            if state is not None:
+                if state == 0:
+                    self.run_label.setText("停止")
+                    self.run_label.setStyleSheet("")
+                else:
+                    self.run_label.setText("运行中")
+                    self.run_label.setStyleSheet("color: green;")
     
     def closeEvent(self, event):
         """窗口关闭事件"""
