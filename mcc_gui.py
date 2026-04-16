@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
     QStatusBar, QDoubleSpinBox, QFrame,
-    QMessageBox, QMenuBar, QListWidget
+    QMessageBox, QMenuBar, QListWidget, QListWidgetItem, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
@@ -277,7 +277,7 @@ class MCCMainWindow(QMainWindow):
                 self.log_info(f"[{level}] {msg}")
 
         self.driver = MCCDriver(log_callback=log_callback)
-        self.jog_mode = False
+        self.jog_mode = True
         self.speed_override = 0.0
         self.active_jog_axes = set()
         self.status_poll_phase = 0
@@ -314,6 +314,7 @@ class MCCMainWindow(QMainWindow):
             """
             CREATE TABLE IF NOT EXISTS abc_position_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT,
                 axis_a REAL NOT NULL,
                 axis_b REAL NOT NULL,
                 axis_c REAL NOT NULL,
@@ -360,13 +361,39 @@ class MCCMainWindow(QMainWindow):
 
         cursor = self.record_db_conn.execute(
             """
-            INSERT INTO abc_position_records (axis_a, axis_b, axis_c)
-            VALUES (?, ?, ?)
+            INSERT INTO abc_position_records (label, axis_a, axis_b, axis_c)
+            VALUES (?, ?, ?, ?)
             """,
-            tuple(positions),
+            (None, *positions),
         )
         self.record_db_conn.commit()
         return int(cursor.lastrowid)
+
+    def format_record_label(self, record_id: int, label: Optional[str]) -> str:
+        """返回记录在列表中的显示名称。"""
+        normalized = (label or "").strip()
+        return normalized if normalized else f"记录 #{record_id}"
+
+    def rename_record(self, record_id: int, label: str):
+        """更新记录的显示名称。"""
+        if self.record_db_conn is None:
+            raise RuntimeError("位置记录数据库未初始化")
+
+        normalized = label.strip()
+        self.record_db_conn.execute(
+            """
+            UPDATE abc_position_records
+            SET label = ?
+            WHERE id = ?
+            """,
+            (normalized or None, record_id),
+        )
+        self.record_db_conn.commit()
+
+    def get_record_item_id(self, item: QListWidgetItem) -> Optional[int]:
+        """从列表项中读取绑定的记录 ID。"""
+        record_id = item.data(Qt.ItemDataRole.UserRole)
+        return int(record_id) if record_id is not None else None
 
     def get_soft_limit_map(self) -> dict:
         """读取 XYAB 软限位，用于绘图。"""
@@ -420,11 +447,13 @@ class MCCMainWindow(QMainWindow):
             return
 
         rows = self.record_db_conn.execute(
-            "SELECT id FROM abc_position_records ORDER BY id"
+            "SELECT id, label FROM abc_position_records ORDER BY id"
         ).fetchall()
         self.record_list.clear()
-        for record_id, in rows:
-            self.record_list.addItem(str(record_id))
+        for record_id, label in rows:
+            item = QListWidgetItem(self.format_record_label(int(record_id), label))
+            item.setData(Qt.ItemDataRole.UserRole, int(record_id))
+            self.record_list.addItem(item)
 
     def move_to_recorded_abc_position(self, targets: List[float]) -> bool:
         """将 A/B/C 轴移动到记录位置。"""
@@ -468,10 +497,6 @@ class MCCMainWindow(QMainWindow):
         # --- 位置显示 ---
         pos_group = self.create_position_group()
         left_layout.addWidget(pos_group)
-        
-        # --- 状态选项 ---
-        status_group = self.create_status_options()
-        left_layout.addWidget(status_group)
         
         # --- 信息输出 ---
         info_group = QGroupBox("信息输出")
@@ -625,6 +650,7 @@ class MCCMainWindow(QMainWindow):
         serial_layout.addWidget(btn_serial_close, 2, 1)
         
         tab.addTab(serial_page, "RS232")
+        tab.setCurrentIndex(1)
         
         layout.addWidget(tab)
         
@@ -678,17 +704,6 @@ class MCCMainWindow(QMainWindow):
         
         return group
     
-    def create_status_options(self) -> QGroupBox:
-        """创建状态选项组"""
-        group = QGroupBox("显示选项")
-        layout = QVBoxLayout(group)
-        
-        self.cb_update_pos = QCheckBox("更新位置")
-        self.cb_update_pos.setChecked(True)
-        layout.addWidget(self.cb_update_pos)
-        
-        return group
-    
     def create_manual_control(self) -> QGroupBox:
         """创建手动控制组"""
         group = QGroupBox("手动控制")
@@ -719,6 +734,7 @@ class MCCMainWindow(QMainWindow):
         
         # Jog 模式
         self.cb_jog = QCheckBox("Jog模式")
+        self.cb_jog.setChecked(True)
         self.cb_jog.stateChanged.connect(self.on_jog_mode_changed)
         layout.addWidget(self.cb_jog, 6, 0, 1, 2)
         
@@ -726,7 +742,7 @@ class MCCMainWindow(QMainWindow):
         layout.addWidget(QLabel("手动速度:"), 7, 0)
         self.manual_spd = QDoubleSpinBox()
         self.manual_spd.setRange(0.001, 1000)
-        self.manual_spd.setValue(5.0)
+        self.manual_spd.setValue(1.0)
         self.manual_spd.setDecimals(3)
         self.manual_spd.setSingleStep(0.001)
         layout.addWidget(self.manual_spd, 7, 1)
@@ -783,7 +799,11 @@ class MCCMainWindow(QMainWindow):
         self.record_list.itemDoubleClicked.connect(self.on_record_item_double_clicked)
         layout.addWidget(self.record_list)
 
-        tip_label = QLabel("双击序号跳转到对应 ABC 位置")
+        self.btn_rename_record = QPushButton("重命名")
+        self.btn_rename_record.clicked.connect(self.on_rename_record)
+        layout.addWidget(self.btn_rename_record)
+
+        tip_label = QLabel("双击跳转位置，名称仅用于区分标记点")
         tip_label.setStyleSheet("color: #aaaaaa;")
         layout.addWidget(tip_label)
 
@@ -798,7 +818,7 @@ class MCCMainWindow(QMainWindow):
         btn_zero.clicked.connect(self.on_zero_coordinates)
         layout.addWidget(btn_zero)
 
-        tip_label = QLabel("重置 XYZABC 显示坐标为 0，不移动机械位置")
+        tip_label = QLabel("重置所有轴坐标为 0，无实际移动")
         tip_label.setStyleSheet("color: #aaaaaa;")
         layout.addWidget(tip_label)
 
@@ -1033,10 +1053,9 @@ class MCCMainWindow(QMainWindow):
             self.log_info("未连接，无法跳转到记录位置")
             return
 
-        try:
-            record_id = int(item.text())
-        except ValueError:
-            self.log_info(f"无效的记录序号: {item.text()}")
+        record_id = self.get_record_item_id(item)
+        if record_id is None:
+            self.log_info(f"无效的记录项: {item.text()}")
             return
 
         targets = self.fetch_record_targets(record_id)
@@ -1052,6 +1071,34 @@ class MCCMainWindow(QMainWindow):
             )
         else:
             self.log_info(f"跳转到记录 #{record_id} 失败")
+
+    def on_rename_record(self):
+        """修改选中 ABC 记录的显示名称。"""
+        current_item = self.record_list.currentItem()
+        if current_item is None:
+            self.log_info("未选中记录，无法重命名")
+            return
+
+        record_id = self.get_record_item_id(current_item)
+        if record_id is None:
+            self.log_info(f"无效的记录项: {current_item.text()}")
+            return
+
+        current_label = current_item.text()
+        new_label, ok = QInputDialog.getText(
+            self,
+            "重命名记录",
+            "输入新的记录名称：",
+            text=current_label,
+        )
+        if not ok:
+            return
+
+        self.rename_record(record_id, new_label)
+        self.refresh_record_list()
+        self.log_info(
+            f"记录 #{record_id} 已重命名为: {self.format_record_label(record_id, new_label)}"
+        )
 
     def on_zero_coordinates(self):
         """将当前点的 XYZABC 逻辑坐标清零，不移动机械位置。"""
@@ -1119,7 +1166,7 @@ class MCCMainWindow(QMainWindow):
         poll_target = poll_cycle[self.status_poll_phase % len(poll_cycle)]
         self.status_poll_phase = (self.status_poll_phase + 1) % len(poll_cycle)
 
-        if poll_target == "pos" and self.cb_update_pos.isChecked():
+        if poll_target == "pos":
             pos = self.driver.get_axis_pos(0xFF)
             if pos:
                 self.axis_pos = list(pos)
