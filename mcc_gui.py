@@ -5,7 +5,7 @@ MCC 运动控制卡 - PyQt6 最简控制界面
 功能:
 - TCP/串口连接
 - 6轴手动控制 (点动/回零)
-- 位置/速度实时显示
+- 位置实时显示
 - 急停/停止
 - IO状态显示
 
@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
-    QStatusBar, QDoubleSpinBox, QFrame, QRadioButton, QButtonGroup,
+    QStatusBar, QDoubleSpinBox, QFrame,
     QMessageBox, QMenuBar, QListWidget
 )
 from PyQt6.QtCore import Qt, QTimer
@@ -36,6 +36,8 @@ class PositionPlot(QWidget):
     """位置绘图板，显示 AB 十字坐标系和 Z 一维坐标轴。"""
 
     AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2, "A": 3, "B": 4, "C": 5}
+    DRAW_SCALE = 0.8
+    AB_X_AXIS_SCALE = 1.1
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,6 +102,17 @@ class PositionPlot(QWidget):
             x2, y2 = points[(i + 1) % 10]
             painter.drawLine(x1, y1, x2, y2)
 
+    def _scaled_rect(self, rect: QRectF, scale: float) -> QRectF:
+        """按中心点缩放绘图区，给标签和图形留出更多边距。"""
+        new_width = rect.width() * scale
+        new_height = rect.height() * scale
+        return QRectF(
+            rect.center().x() - new_width / 2,
+            rect.center().y() - new_height / 2,
+            new_width,
+            new_height,
+        )
+
     def _draw_ab_axes(self, painter: QPainter, rect: QRectF):
         left, right = int(rect.left()), int(rect.right())
         top, bottom = int(rect.top()), int(rect.bottom())
@@ -109,16 +122,25 @@ class PositionPlot(QWidget):
         current_a = self.positions[self.AXIS_INDEX["A"]]
         current_b = self.positions[self.AXIS_INDEX["B"]]
 
+        half_axis_width = rect.width() / 2
+        scaled_half_width = half_axis_width * self.AB_X_AXIS_SCALE
+        x_axis_start = max(2, int(center_x - scaled_half_width))
+        x_axis_end = min(self.width() - 2, int(center_x + scaled_half_width))
+
         painter.setPen(QPen(self.axis_colors["A"], 2))
-        self._draw_arrow(painter, left + 8, center_y, right - 12, center_y)
+        self._draw_arrow(painter, x_axis_start, center_y, x_axis_end, center_y)
         painter.setPen(QPen(self.axis_colors["B"], 2))
         self._draw_arrow(painter, center_x, top + 8, center_x, bottom - 12)
 
-        target_pixels = max(60.0, min(rect.width(), rect.height()) * 0.30)
+        target_pixels = max(48.0, min(rect.width(), rect.height()) * 0.30 * self.DRAW_SCALE)
         delta_a = -(current_a - self.origin_ab[0])
         delta_b = -(current_b - self.origin_ab[1])
         delta_norm = (delta_a ** 2 + delta_b ** 2) ** 0.5
-        pixels_per_unit = target_pixels / delta_norm if delta_norm > 1e-6 else min(rect.width(), rect.height()) * 0.06
+        pixels_per_unit = (
+            target_pixels / delta_norm
+            if delta_norm > 1e-6
+            else min(rect.width(), rect.height()) * 0.06 * self.DRAW_SCALE
+        )
 
         origin_x = center_x
         origin_y = center_y
@@ -164,8 +186,12 @@ class PositionPlot(QWidget):
         self._draw_arrow(painter, center_x, top + 12, center_x, bottom - 10)
 
         delta_z = current_z - self.origin_z
-        axis_half = max(40.0, rect.height() * 0.30)
-        pixels_per_unit = axis_half / abs(delta_z) if abs(delta_z) > 1e-6 else rect.height() * 0.06
+        axis_half = max(32.0, rect.height() * 0.30 * self.DRAW_SCALE)
+        pixels_per_unit = (
+            axis_half / abs(delta_z)
+            if abs(delta_z) > 1e-6
+            else rect.height() * 0.06 * self.DRAW_SCALE
+        )
         origin_y = (top + bottom) // 2
         point_y = int(origin_y + delta_z * pixels_per_unit)
 
@@ -180,14 +206,15 @@ class PositionPlot(QWidget):
 
         painter.setPen(QPen(QColor(220, 220, 220), 1))
         painter.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-        painter.drawText(center_x + 6, top + 14, "Z")
+        label_x = max(2, left - 3)
+        painter.drawText(label_x, top + 14, "Z")
         origin_label_y = max(top + 26, origin_y - 8)
         point_label_y = point_y + 18 if abs(point_y - origin_y) < 22 else point_y - 8
         point_label_y = max(top + 38, min(bottom - 8, point_label_y))
         len_label_y = max(top + 52, min(bottom - 20, (origin_y + point_y) // 2))
-        painter.drawText(center_x + 6, origin_label_y, f"({self.origin_z:.1f})")
-        painter.drawText(center_x + 6, point_label_y, f"({current_z:.1f})")
-        painter.drawText(center_x + 10, len_label_y, f"L={abs(current_z - self.origin_z):.2f}")
+        painter.drawText(label_x, origin_label_y, f"({self.origin_z:.3f})")
+        painter.drawText(label_x, point_label_y, f"({current_z:.3f})")
+        painter.drawText(label_x, len_label_y, f"L={abs(current_z - self.origin_z):.2f}")
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -196,8 +223,31 @@ class PositionPlot(QWidget):
 
         width = self.width()
         height = self.height()
-        ab_rect = QRectF(16, 12, max(180, width - 100), max(120, height - 24))
-        z_rect = QRectF(width - 72, 20, 52, max(100, height - 40))
+        top_margin = 0.1
+        left_margin = 0.1 
+        right_margin = 10
+        bottom_margin = 0.1
+        z_width = 100 
+        z_gap = 0.5 
+
+        ab_rect = self._scaled_rect(
+            QRectF(
+                left_margin,
+                top_margin,
+                max(80, width - left_margin - right_margin - z_width - z_gap),
+                max(60, height - top_margin - bottom_margin),
+            ),
+            self.DRAW_SCALE,
+        )
+        z_rect = self._scaled_rect(
+            QRectF(
+                width - right_margin - z_width,
+                top_margin,
+                z_width,
+                max(50, height - top_margin - bottom_margin),
+            ),
+            self.DRAW_SCALE,
+        )
 
         self._draw_ab_axes(painter, ab_rect)
         self._draw_z_axis(painter, z_rect)
@@ -213,6 +263,8 @@ class MCCMainWindow(QMainWindow):
     RECORD_DB_PREFIX = "mcc-position-record-"
     ZERO_RESET_AXES = tuple(range(6))
     STATUS_UPDATE_INTERVAL_MS = 60
+    DEFAULT_WINDOW_WIDTH = 960
+    DEFAULT_WINDOW_HEIGHT = 720
 
     def __init__(self):
         super().__init__()
@@ -229,6 +281,7 @@ class MCCMainWindow(QMainWindow):
         self.speed_override = 0.0
         self.active_jog_axes = set()
         self.status_poll_phase = 0
+        self._center_on_first_show = True
 
         # 位置缓存
         self.axis_pos = [0.0] * 6
@@ -395,7 +448,8 @@ class MCCMainWindow(QMainWindow):
     def init_ui(self):
         """初始化界面"""
         self.setWindowTitle("MCC 运动控制 - Python版")
-        self.setMinimumSize(1200, 800)
+        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self.setMinimumSize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
         
         # 创建中央部件
         central_widget = QWidget()
@@ -405,6 +459,7 @@ class MCCMainWindow(QMainWindow):
         # ==================== 左侧面板 ====================
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
         
         # --- 通信配置 ---
         comm_group = self.create_comm_group()
@@ -429,7 +484,7 @@ class MCCMainWindow(QMainWindow):
         
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
-        self.info_text.setMaximumHeight(200)  # 增加高度
+        self.info_text.setMaximumHeight(150)
         self.info_text.setStyleSheet("font-family: monospace; font-size: 10px;")
         info_layout.addWidget(self.info_text)
         
@@ -468,20 +523,15 @@ class MCCMainWindow(QMainWindow):
         self.position_plot = PositionPlot()
         plot_group = QGroupBox("位置图示")
         plot_layout = QVBoxLayout(plot_group)
-        plot_layout.setContentsMargins(6, 10, 6, 6)
+        plot_layout.setContentsMargins(3, 6, 3, 3)
         plot_layout.addWidget(self.position_plot)
-        plot_group.setMaximumHeight(240)
+        plot_group.setMaximumHeight(228)
         right_layout.addWidget(plot_group, stretch=3)
         
         # --- 位置记录 ---
         record_group = self.create_record_group()
         right_layout.addWidget(record_group, stretch=2)
 
-        # --- IO 状态 ---
-        io_group = self.create_io_status()
-        io_group.setMaximumHeight(110)
-        right_layout.addWidget(io_group, stretch=0)
-        
         main_layout.addWidget(right_panel, stretch=1)
         
         # ==================== 状态栏 ====================
@@ -496,6 +546,24 @@ class MCCMainWindow(QMainWindow):
         
         # ==================== 菜单栏 ====================
         self.create_menu_bar()
+
+    def _center_window(self):
+        """将窗口居中到当前屏幕可用区域。"""
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        available_geometry = screen.availableGeometry()
+        frame_geometry = self.frameGeometry()
+        frame_geometry.moveCenter(available_geometry.center())
+        self.move(frame_geometry.topLeft())
+
+    def showEvent(self, event):
+        """首次显示时将窗口居中。"""
+        super().showEvent(event)
+        if self._center_on_first_show:
+            self._center_on_first_show = False
+            self._center_window()
     
     def create_comm_group(self) -> QGroupBox:
         """创建通信配置组"""
@@ -574,55 +642,39 @@ class MCCMainWindow(QMainWindow):
     
     def create_position_group(self) -> QGroupBox:
         """创建位置显示组"""
-        group = QGroupBox("轴位置/速度")
+        group = QGroupBox("轴位置")
+        group.setMinimumHeight(250)
         layout = QGridLayout(group)
+        layout.setContentsMargins(8, 10, 8, 8)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(2)
         
         # 轴名
         axes = ["X", "Y", "Z", "A", "B", "C"]
         
         # 标题行
         layout.addWidget(QLabel("轴"), 0, 0)
-        layout.addWidget(QLabel("位置"), 0, 1)
-        layout.addWidget(QLabel("速度"), 0, 2)
-        layout.addWidget(QLabel("单位"), 0, 3)
+        layout.addWidget(QLabel("位置(mm)"), 0, 1)
         
-        # 创建位置和速度标签
+        # 创建位置标签
         self.pos_labels = []
-        self.spd_labels = []
-        self.unit_labels = []
-        self.axis_radios = []
-        
-        self.axis_button_group = QButtonGroup()
         
         for i, axis in enumerate(axes):
             row = i + 1
             
-            # 单选按钮
-            radio = QRadioButton(axis)
-            if i == 0:
-                radio.setChecked(True)
-            self.axis_button_group.addButton(radio, i)
-            layout.addWidget(radio, row, 0)
-            self.axis_radios.append(radio)
+            # 轴名
+            axis_label = QLabel(axis)
+            axis_label.setMinimumWidth(20)
+            axis_label.setStyleSheet("font-weight: 600;")
+            layout.addWidget(axis_label, row, 0)
             
             # 位置标签
             pos_label = QLabel("0.000")
             pos_label.setMinimumWidth(80)
-            pos_label.setStyleSheet("background-color: #2d2d2d; color: #00ff00; padding: 5px; font-family: monospace;")
+            pos_label.setMinimumHeight(20)
+            pos_label.setStyleSheet("color: #00ff00; font-family: monospace; padding: 0px;")
             layout.addWidget(pos_label, row, 1)
             self.pos_labels.append(pos_label)
-            
-            # 速度标签
-            spd_label = QLabel("0.0")
-            spd_label.setMinimumWidth(60)
-            spd_label.setStyleSheet("background-color: #2d2d2d; color: #ffff00; padding: 5px; font-family: monospace;")
-            layout.addWidget(spd_label, row, 2)
-            self.spd_labels.append(spd_label)
-            
-            # 单位
-            unit_label = QLabel("mm")
-            layout.addWidget(unit_label, row, 3)
-            self.unit_labels.append(unit_label)
         
         return group
     
@@ -634,14 +686,6 @@ class MCCMainWindow(QMainWindow):
         self.cb_update_pos = QCheckBox("更新位置")
         self.cb_update_pos.setChecked(True)
         layout.addWidget(self.cb_update_pos)
-        
-        self.cb_update_spd = QCheckBox("更新速度")
-        self.cb_update_spd.setChecked(True)
-        layout.addWidget(self.cb_update_spd)
-        
-        self.cb_update_io = QCheckBox("更新IO状态")
-        self.cb_update_io.setChecked(True)
-        layout.addWidget(self.cb_update_io)
         
         return group
     
@@ -760,39 +804,6 @@ class MCCMainWindow(QMainWindow):
 
         return group
 
-    def create_io_status(self) -> QGroupBox:
-        """创建IO状态组"""
-        group = QGroupBox("IO状态")
-        layout = QGridLayout(group)
-        
-        # 输入状态
-        layout.addWidget(QLabel("输入:"), 0, 0)
-        self.input_label = QLabel("0x0000")
-        self.input_label.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.input_label, 0, 1)
-        
-        # 输出状态
-        layout.addWidget(QLabel("输出:"), 1, 0)
-        self.output_label = QLabel("0x0000")
-        self.output_label.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.output_label, 1, 1)
-        
-        # IO 指示灯
-        io_grid = QGridLayout()
-        self.io_indicators = []
-        for i in range(16):
-            indicator = QFrame()
-            indicator.setFixedSize(15, 15)
-            indicator.setStyleSheet("background-color: #333; border: 1px solid #555;")
-            io_grid.addWidget(indicator, i // 8, i % 8)
-            self.io_indicators.append(indicator)
-        
-        layout.addLayout(io_grid, 2, 0, 1, 2)
-        layout.setVerticalSpacing(4)
-        group.setMaximumHeight(110)
-        
-        return group
-    
     def create_menu_bar(self):
         """创建菜单栏"""
         menubar = self.menuBar()
@@ -946,7 +957,6 @@ class MCCMainWindow(QMainWindow):
         if self.jog_mode:
             self.active_jog_axes.discard(axis)
             self.driver.emergency_stop(axis)
-            self.spd_labels[axis].setText("0.0")
     
     def on_home(self, axis: int):
         """回零"""
@@ -1105,7 +1115,7 @@ class MCCMainWindow(QMainWindow):
         if not self.driver.connected:
             return
 
-        poll_cycle = ["pos", "spd"] if self.active_jog_axes else ["pos", "spd", "io", "run"]
+        poll_cycle = ["pos"] if self.active_jog_axes else ["pos", "run"]
         poll_target = poll_cycle[self.status_poll_phase % len(poll_cycle)]
         self.status_poll_phase = (self.status_poll_phase + 1) % len(poll_cycle)
 
@@ -1116,27 +1126,6 @@ class MCCMainWindow(QMainWindow):
                 for i in range(6):
                     self.pos_labels[i].setText(f"{pos[i]:.3f}")
                 self.refresh_plot_state()
-
-        if poll_target == "spd" and self.cb_update_spd.isChecked():
-            spd = self.driver.get_axis_spd(0xFF)
-            if spd:
-                self.axis_spd = list(spd)
-                for i in range(6):
-                    self.spd_labels[i].setText(f"{spd[i]:.1f}")
-
-        if poll_target == "io" and self.cb_update_io.isChecked():
-            inp = self.driver.get_input(0)
-            if inp is not None:
-                self.input_label.setText(f"0x{inp:04X}")
-                for i in range(16):
-                    bit = bool(inp & (1 << i))
-                    self.io_indicators[i].setStyleSheet(
-                        "background-color: lime; border: 1px solid #555;" if bit
-                        else "background-color: #333; border: 1px solid #555;"
-                    )
-            out = self.driver.get_output(0)
-            if out is not None:
-                self.output_label.setText(f"0x{out:04X}")
 
         if poll_target == "run":
             state = self.driver.get_run_state()
