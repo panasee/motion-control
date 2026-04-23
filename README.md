@@ -31,7 +31,7 @@ pip install pyserial PyQt6
 
 ```bash
 cd /home/dongkai-claw/od-work/claw-dir
-python mcc_gui.py
+python controller_gui.py
 ```
 
 ---
@@ -46,7 +46,7 @@ python mcc_gui.py
 
 **Python 代码**:
 ```python
-from mcc_driver import MCCDriver
+from onway_driver import MCCDriver
 
 driver = MCCDriver()
 driver.connect_tcp("192.168.1.100", 5000)

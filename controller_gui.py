@@ -29,7 +29,7 @@ from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
 from PyQt6.QtCore import QRectF
 
 # 生产环境：必须导入真正的驱动
-from mcc_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
+from onway_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
 
 
 class PositionPlot(QWidget):
