@@ -96,12 +96,17 @@ def _load_controller_module():
     dummy_driver_module.ParaIndex = object()
     dummy_driver_module.SERIAL_AVAILABLE = False
 
+    dummy_nexcope_driver_module = types.ModuleType("nexcope_driver")
+    dummy_nexcope_driver_module.NexcopeDriver = type("DummyNexcopeDriver", (), {})
+    dummy_nexcope_driver_module.SERIAL_AVAILABLE = False
+
     stub_modules = {
         "PyQt6": pyqt6,
         "PyQt6.QtWidgets": dummy_widgets,
         "PyQt6.QtCore": dummy_core,
         "PyQt6.QtGui": dummy_gui,
         "onway_driver": dummy_driver_module,
+        "nexcope_driver": dummy_nexcope_driver_module,
     }
 
     spec = importlib.util.spec_from_file_location("controller_gui_under_test", SOURCE_PATH)
@@ -212,7 +217,18 @@ class ControllerShellConnectionHandoffTest(unittest.TestCase):
 
     class FakePage:
         def __init__(self, events, name):
+            self.events = events
+            self.name = name
             self.driver = ControllerShellConnectionHandoffTest.FakeDriver(events, name)
+            self._active_connection_method = None
+
+        def on_disconnect(self):
+            self.events.append(f"{self.name}.on_disconnect")
+            self.driver.disconnect()
+
+        def on_serial_disconnect(self):
+            self.events.append(f"{self.name}.on_serial_disconnect")
+            self.driver.disconnect()
 
     def setUp(self) -> None:
         module = _load_controller_module()
@@ -237,10 +253,29 @@ class ControllerShellConnectionHandoffTest(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ["onway.connect", "onway.disconnect", "nexcope.connect"],
+            ["onway.connect", "onway.on_disconnect", "onway.disconnect", "nexcope.connect"],
         )
         self.assertFalse(onway_page.driver.connected)
         self.assertTrue(nexcope_page.driver.connected)
+        self.assertIs(shell._active_connection_owner, nexcope_page)
+
+    def test_serial_handoff_uses_page_serial_disconnect_flow(self) -> None:
+        shell = self._make_shell()
+        events = []
+        onway_page = self.FakePage(events, "onway")
+        nexcope_page = self.FakePage(events, "nexcope")
+
+        self.ControllerMainWindow._install_connection_hooks(shell, onway_page)
+        self.ControllerMainWindow._install_connection_hooks(shell, nexcope_page)
+
+        onway_page.driver.connect_serial()
+        nexcope_page.driver.connect()
+
+        self.assertEqual(
+            events,
+            ["onway.connect_serial", "onway.on_serial_disconnect", "onway.disconnect", "nexcope.connect"],
+        )
+        self.assertIsNone(onway_page._active_connection_method)
         self.assertIs(shell._active_connection_owner, nexcope_page)
 
     def test_same_page_reconnect_does_not_disconnect_itself_first(self) -> None:
