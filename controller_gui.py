@@ -9,7 +9,7 @@ MCC 运动控制卡 - PyQt6 最简控制界面
 - 急停/停止
 - IO状态显示
 
-生产环境版本 - 必须依赖 mcc_driver.py
+生产环境版本 - 必须依赖 onway_driver.py
 """
 
 import os
