@@ -1362,6 +1362,20 @@ class NexcopeControlPage(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(self.create_record_group(), stretch=1)
+        self.illumination_group = self.create_illumination_group()
+        self.fluorescence_group = self.create_fluorescence_group()
+        self.condenser_group = self.create_condenser_group()
+        self.beam_splitter_group = self.create_beam_splitter_group()
+        self.nosepiece_group = self.create_nosepiece_group()
+        self.optical_groups = [
+            self.illumination_group,
+            self.fluorescence_group,
+            self.condenser_group,
+            self.beam_splitter_group,
+            self.nosepiece_group,
+        ]
+        for group in self.optical_groups:
+            right_layout.addWidget(group)
         main_layout.addWidget(right_panel, stretch=1)
 
     def create_comm_group(self) -> QGroupBox:
@@ -1492,6 +1506,116 @@ class NexcopeControlPage(QWidget):
         layout.addWidget(tip_label)
         return group
 
+    def create_illumination_group(self) -> QGroupBox:
+        group = QGroupBox("照明控制")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("上光路"), 0, 0)
+        self.upper_light_value = QLabel("未读取")
+        layout.addWidget(self.upper_light_value, 0, 1)
+        layout.addWidget(QLabel("SLED"), 1, 0)
+        self.sled_value = QLabel("未读取")
+        layout.addWidget(self.sled_value, 1, 1)
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_illumination_group)
+        layout.addWidget(btn_refresh, 2, 0, 1, 2)
+        return group
+
+    def create_fluorescence_group(self) -> QGroupBox:
+        group = QGroupBox("荧光转盘")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("YGTN"), 0, 0)
+        self.fluorescence_value = QLabel("未读取")
+        layout.addWidget(self.fluorescence_value, 0, 1)
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_fluorescence_group)
+        layout.addWidget(btn_refresh, 1, 0, 1, 2)
+        return group
+
+    def create_condenser_group(self) -> QGroupBox:
+        group = QGroupBox("聚光镜")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("JGTN"), 0, 0)
+        self.condenser_value = QLabel("未读取")
+        layout.addWidget(self.condenser_value, 0, 1)
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_condenser_group)
+        layout.addWidget(btn_refresh, 1, 0, 1, 2)
+        return group
+
+    def create_beam_splitter_group(self) -> QGroupBox:
+        group = QGroupBox("分光镜")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("FGTN"), 0, 0)
+        self.beam_splitter_value = QLabel("未读取")
+        layout.addWidget(self.beam_splitter_value, 0, 1)
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_beam_splitter_group)
+        layout.addWidget(btn_refresh, 1, 0, 1, 2)
+        return group
+
+    def create_nosepiece_group(self) -> QGroupBox:
+        group = QGroupBox("物镜转盘")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("WJTN"), 0, 0)
+        self.nosepiece_value = QLabel("未读取")
+        layout.addWidget(self.nosepiece_value, 0, 1)
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_nosepiece_group)
+        layout.addWidget(btn_refresh, 1, 0, 1, 2)
+        return group
+
+    def mark_group_unsupported(self, group_box, message="当前设备不支持该功能"):
+        group_box.setEnabled(False)
+        group_box.setToolTip(message)
+
+    def reset_group_support_state(self, group_box):
+        group_box.setEnabled(True)
+        group_box.setToolTip("")
+
+    def reset_optical_groups(self):
+        if not hasattr(self, "optical_groups"):
+            return
+        for group in self.optical_groups:
+            self.reset_group_support_state(group)
+
+    def load_optional_value(self, group_box, value_label, loader, description: str):
+        try:
+            value = loader()
+        except NotImplementedError as exc:
+            value_label.setText("不支持")
+            self.mark_group_unsupported(group_box)
+            self.log_info(f"{description} 不支持: {exc}")
+            return
+        except Exception as exc:
+            value_label.setText("读取失败")
+            self.log_info(f"{description} 读取失败: {exc}")
+            return
+
+        value_label.setText(str(value))
+
+    def refresh_illumination_group(self):
+        self.load_optional_value(self.illumination_group, self.upper_light_value, self.driver.get_upper_light_path, "上光路")
+        self.load_optional_value(self.illumination_group, self.sled_value, self.driver.get_sled, "照明状态")
+
+    def refresh_fluorescence_group(self):
+        self.load_optional_value(self.fluorescence_group, self.fluorescence_value, self.driver.get_ygtn, "荧光转盘")
+
+    def refresh_condenser_group(self):
+        self.load_optional_value(self.condenser_group, self.condenser_value, self.driver.get_jgtn, "聚光镜")
+
+    def refresh_beam_splitter_group(self):
+        self.load_optional_value(self.beam_splitter_group, self.beam_splitter_value, self.driver.get_fgtn, "分光镜")
+
+    def refresh_nosepiece_group(self):
+        self.load_optional_value(self.nosepiece_group, self.nosepiece_value, self.driver.get_wjtn, "物镜转盘")
+
+    def refresh_optical_groups(self):
+        self.refresh_illumination_group()
+        self.refresh_fluorescence_group()
+        self.refresh_condenser_group()
+        self.refresh_beam_splitter_group()
+        self.refresh_nosepiece_group()
+
     def log_info(self, msg: str):
         import datetime
 
@@ -1533,7 +1657,9 @@ class NexcopeControlPage(QWidget):
             if self.driver.connect_serial(port, baudrate):
                 self._set_connection_state(True, f"已连接 ({port})")
                 self.log_info(f"串口连接成功: {port} @ {baudrate}")
+                self.reset_optical_groups()
                 self.update_status()
+                self.refresh_optical_groups()
                 self.update_timer.start()
             else:
                 self.log_info(f"串口连接失败: {port} @ {baudrate}")

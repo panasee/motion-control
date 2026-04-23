@@ -2,6 +2,14 @@
 
 MCCDemo6 运动控制卡的 Python 驱动和 GUI 界面，支持 TCP/IP 和 RS232 通信。
 
+## Current Entrypoints
+
+- GUI entrypoint: `controller_gui.py`
+- Onway driver: `onway_driver.py`
+- Nexcope driver: `nexcope_driver.py`
+- `controller_gui.py` now hosts both `Onway` and `Nexcope` tabs
+- `Onway` keeps the existing six-axis logic; `Nexcope` uses a separate three-axis page with XY-only position records
+
 ---
 
 ## 目录

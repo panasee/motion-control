@@ -78,6 +78,13 @@ class ModuleRenameSmokeTest(unittest.TestCase):
         self.assertIsNotNone(MCCDriver)
         self.assertTrue(callable(main))
 
+    def test_readme_mentions_current_entrypoint_and_drivers(self) -> None:
+        text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("controller_gui.py", text)
+        self.assertIn("onway_driver.py", text)
+        self.assertIn("nexcope_driver.py", text)
+
 
 if __name__ == "__main__":
     unittest.main()

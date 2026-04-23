@@ -143,6 +143,13 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertIn("return self.nexcope_page", SOURCE_PATH.read_text(encoding="utf-8"))
         self.assertIn("_install_connection_hooks(self.nexcope_page)", SOURCE_PATH.read_text(encoding="utf-8"))
 
+    def test_nexcope_page_declares_ne950_group_titles(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        for title in ["照明控制", "荧光转盘", "聚光镜", "分光镜", "物镜转盘"]:
+            self.assertIn(title, source)
+        self.assertIn("self.optical_groups = [", source)
+
 
 class NexcopePageRecordDbTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -182,6 +189,65 @@ class NexcopePageRecordDbTests(unittest.TestCase):
         self.module.NexcopeControlPage.on_record_position(page)
 
         self.assertEqual(messages, ["未连接或无法读取 XY 位置，记录失败"])
+
+    def test_mark_group_unsupported_disables_group_and_sets_tooltip(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+
+        class FakeGroup:
+            def __init__(self):
+                self.enabled = True
+                self.tooltip = ""
+
+            def setEnabled(self, value):
+                self.enabled = value
+
+            def setToolTip(self, value):
+                self.tooltip = value
+
+        group = FakeGroup()
+        self.module.NexcopeControlPage.mark_group_unsupported(page, group, "不支持测试")
+
+        self.assertFalse(group.enabled)
+        self.assertEqual(group.tooltip, "不支持测试")
+
+    def test_load_optional_value_marks_group_unsupported_on_not_implemented(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+        messages = []
+        page.log_info = messages.append
+
+        class FakeGroup:
+            def __init__(self):
+                self.enabled = True
+                self.tooltip = ""
+
+            def setEnabled(self, value):
+                self.enabled = value
+
+            def setToolTip(self, value):
+                self.tooltip = value
+
+        class FakeLabel:
+            def __init__(self):
+                self.text = ""
+
+            def setText(self, value):
+                self.text = value
+
+        group = FakeGroup()
+        label = FakeLabel()
+
+        self.module.NexcopeControlPage.load_optional_value(
+            page,
+            group,
+            label,
+            lambda: (_ for _ in ()).throw(NotImplementedError("ERR-3")),
+            "分光镜",
+        )
+
+        self.assertFalse(group.enabled)
+        self.assertEqual(group.tooltip, "当前设备不支持该功能")
+        self.assertEqual(label.text, "不支持")
+        self.assertEqual(messages, ["分光镜 不支持: ERR-3"])
 
 
 if __name__ == "__main__":
