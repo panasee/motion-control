@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - exercised through injected factories i
 DEFAULT_TERMINATOR = "\r"
 STAGE_XYZ_COMMAND = "INFRD"
 OPTICAL_INFO_COMMAND = "INFRJ"
+UNSUPPORTED_ERROR_CODES = {-3}
 
 
 def format_command(command: str, terminator: str = DEFAULT_TERMINATOR) -> bytes:
@@ -52,7 +53,7 @@ def parse_error_response(response: str) -> dict[str, object]:
 
 
 def is_unsupported_response(response: str) -> bool:
-    """Return True when the device answered with the validated ERR-line shape."""
+    """Return True when the device answered with an ERR-line."""
     return response.strip().startswith("ERR-")
 
 
@@ -74,6 +75,15 @@ def parse_axis_position_response(response: str, axis: str) -> int:
     if normalized_axis not in fields:
         raise ValueError(f"missing axis field: {normalized_axis}")
     return int(fields[normalized_axis])
+
+
+class NexcopeCommandError(RuntimeError):
+    """Raised when the device returns a command error that is not unsupported."""
+
+    def __init__(self, command: str, code: int) -> None:
+        super().__init__(f"{command} failed with Nexcope error code {code}")
+        self.command = command
+        self.code = code
 
 
 class NexcopeDriver:
@@ -134,7 +144,11 @@ class NexcopeDriver:
     def query_supported_line(self, command: str) -> str:
         response = self.query_line(command)
         if is_unsupported_response(response):
-            raise NotImplementedError(f"{command} is not supported by the connected device")
+            error = parse_error_response(response)
+            code = int(error["code"])
+            if code in UNSUPPORTED_ERROR_CODES:
+                raise NotImplementedError(f"{command} is not supported by the connected device")
+            raise NexcopeCommandError(command, code)
         return response
 
     def query_info_fields(self, command: str) -> dict[str, str]:

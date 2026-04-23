@@ -195,6 +195,16 @@ class NexcopeDriverSerialShapeTest(unittest.TestCase):
         with self.assertRaisesRegex(NotImplementedError, "INFRJ"):
             driver.query_info_fields("INFRJ")
 
+    def test_query_supported_line_preserves_non_unsupported_err_codes(self) -> None:
+        from nexcope_driver import NexcopeCommandError, NexcopeDriver
+
+        fake_serial = FakeSerial(responses=[b"ERR-10\r"])
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
+        with self.assertRaisesRegex(NexcopeCommandError, "SLED failed with Nexcope error code -10"):
+            driver.query_supported_line("SLED")
+
     def test_query_supported_line_returns_non_error_line(self) -> None:
         from nexcope_driver import NexcopeDriver
 
