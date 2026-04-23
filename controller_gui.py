@@ -1201,8 +1201,66 @@ class ControllerMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._active_connection_owner = None
         self.onway_window = MCCMainWindow()
+        self._install_connection_hooks(self.onway_window)
         self.init_ui()
+
+    def _install_connection_hooks(self, page) -> None:
+        driver = getattr(page, "driver", None)
+        if driver is None:
+            return
+
+        wrapped_methods = getattr(driver, "_controller_shell_wrapped_methods", set())
+
+        for method_name in ("connect", "connect_serial"):
+            if hasattr(driver, method_name) and method_name not in wrapped_methods:
+                original_method = getattr(driver, method_name)
+
+                def connect_wrapper(*args, _original=original_method, _page=page, **kwargs):
+                    self._handoff_connection(_page)
+                    result = _original(*args, **kwargs)
+                    if self._page_is_connected(_page):
+                        self._active_connection_owner = _page
+                    elif self._active_connection_owner is _page:
+                        self._active_connection_owner = None
+                    return result
+
+                setattr(driver, method_name, connect_wrapper)
+                wrapped_methods.add(method_name)
+
+        if hasattr(driver, "disconnect") and "disconnect" not in wrapped_methods:
+            original_disconnect = getattr(driver, "disconnect")
+
+            def disconnect_wrapper(*args, _original=original_disconnect, _page=page, **kwargs):
+                result = _original(*args, **kwargs)
+                if self._active_connection_owner is _page and not self._page_is_connected(_page):
+                    self._active_connection_owner = None
+                return result
+
+            setattr(driver, "disconnect", disconnect_wrapper)
+            wrapped_methods.add("disconnect")
+
+        driver._controller_shell_wrapped_methods = wrapped_methods
+
+    def _page_is_connected(self, page) -> bool:
+        driver = getattr(page, "driver", None)
+        return bool(getattr(driver, "connected", False))
+
+    def _handoff_connection(self, page) -> None:
+        active_page = self._active_connection_owner
+        if active_page is None:
+            return
+        if active_page is page:
+            return
+        if not self._page_is_connected(active_page):
+            self._active_connection_owner = None
+            return
+
+        active_driver = getattr(active_page, "driver", None)
+        disconnect = getattr(active_driver, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
 
     def init_ui(self):
         self.setWindowTitle("Motion Controller Shell")
