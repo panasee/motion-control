@@ -1193,6 +1193,59 @@ class MCCMainWindow(QMainWindow):
         event.accept()
 
 
+class ControllerMainWindow(QMainWindow):
+    """Top-level shell that hosts controller pages."""
+
+    DEFAULT_WINDOW_WIDTH = 980
+    DEFAULT_WINDOW_HEIGHT = 760
+
+    def __init__(self):
+        super().__init__()
+        self.onway_window = MCCMainWindow()
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("Motion Controller Shell")
+        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self.setMinimumSize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+
+        self.controller_tabs = QTabWidget()
+        self.controller_tabs.addTab(self.create_onway_page(), "Onway")
+        self.controller_tabs.addTab(self.create_nexcope_page(), "Nexcope")
+        self.setCentralWidget(self.controller_tabs)
+
+    def create_onway_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        menu_bar = self.onway_window.menuBar()
+        if menu_bar is not None:
+            layout.setMenuBar(menu_bar)
+
+        central_widget = self.onway_window.takeCentralWidget()
+        if central_widget is not None:
+            layout.addWidget(central_widget)
+
+        status_bar = self.onway_window.statusBar()
+        if status_bar is not None:
+            layout.addWidget(status_bar)
+
+        return page
+
+    def create_nexcope_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        placeholder = QLabel("Nexcope page scaffold")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(placeholder)
+        return page
+
+    def closeEvent(self, event):
+        self.onway_window.close()
+        super().closeEvent(event)
+
+
 def main():
     app = QApplication(sys.argv)
     
@@ -1216,7 +1269,7 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
     app.setPalette(palette)
     
-    window = MCCMainWindow()
+    window = ControllerMainWindow()
     window.show()
     
     sys.exit(app.exec())
