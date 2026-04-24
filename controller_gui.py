@@ -9,19 +9,22 @@ MCC 运动控制卡 - PyQt6 最简控制界面
 - 急停/停止
 - IO状态显示
 
-生产环境版本 - 必须依赖 mcc_driver.py
+生产环境版本 - 必须依赖 onway_driver.py
 """
 
 import os
+import json
 import sqlite3
 import sys
 import tempfile
+import threading
+from pathlib import Path
 from typing import List, Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
-    QStatusBar, QDoubleSpinBox, QFrame,
+    QStatusBar, QDoubleSpinBox, QFrame, QSlider,
     QMessageBox, QMenuBar, QListWidget, QListWidgetItem, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
@@ -29,7 +32,8 @@ from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
 from PyQt6.QtCore import QRectF
 
 # 生产环境：必须导入真正的驱动
-from mcc_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
+from onway_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
+from nexcope_driver import NexcopeDriver, SERIAL_AVAILABLE as NEXCOPE_SERIAL_AVAILABLE
 
 
 class PositionPlot(QWidget):
@@ -1193,6 +1197,965 @@ class MCCMainWindow(QMainWindow):
         event.accept()
 
 
+class NexcopeControlPage(QWidget):
+    """Independent Nexcope control page with XYZ display and XY-only records."""
+
+    AXIS_NAMES = ["X", "Y", "Z"]
+    XY_AXIS_INDICES = (0, 1)
+    CENTER_XY_UM = (65000.0, 37500.0)
+    STATUS_UPDATE_INTERVAL_MS = 200
+    ILLUMINATION_POLL_INTERVAL_MS = 10000
+    ILLUMINATION_WRITE_DEBOUNCE_MS = 150
+    RECORD_DB_PREFIX = "nexcope-position-record-"
+    AUTOFOCUS_OBJECTIVES = ("x10", "x50", "x100")
+    AUTOFOCUS_CONFIG_FILENAME = "nexcope_autofocus.json"
+    COUNTS_PER_UM = 100
+    JOG_INTERVAL_MS = 15
+
+    def __init__(self):
+        super().__init__()
+        self.driver = NexcopeDriver()
+        self.axis_pos = [0.0] * len(self.AXIS_NAMES)
+        self.active_jog_axis: Optional[str] = None
+        self.active_jog_direction = 0
+        self._home_in_progress = False
+        self._home_thread: Optional[threading.Thread] = None
+        self._home_error: Optional[Exception] = None
+        self._home_delta: Optional[tuple[int, int]] = None
+        self._updating_illumination_ui = False
+        self.autofocus_config_path = self.get_autofocus_config_path()
+        self.record_db_path: Optional[str] = None
+        self.record_db_conn: Optional[sqlite3.Connection] = None
+        self.init_record_db()
+        self.init_ui()
+        self.refresh_record_list()
+
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_status)
+        self.update_timer.setInterval(self.STATUS_UPDATE_INTERVAL_MS)
+
+        self.jog_timer = QTimer()
+        self.jog_timer.timeout.connect(self.on_jog_tick)
+        self.jog_timer.setInterval(self.JOG_INTERVAL_MS)
+
+        self.illumination_poll_timer = QTimer()
+        self.illumination_poll_timer.timeout.connect(self.refresh_illumination_group)
+        self.illumination_poll_timer.setInterval(self.ILLUMINATION_POLL_INTERVAL_MS)
+
+        self.illumination_write_timer = QTimer()
+        self.illumination_write_timer.timeout.connect(self.flush_illumination_update)
+        self.illumination_write_timer.setSingleShot(True)
+        self.illumination_write_timer.setInterval(self.ILLUMINATION_WRITE_DEBOUNCE_MS)
+
+        self.home_monitor_timer = QTimer()
+        self.home_monitor_timer.timeout.connect(self.on_home_monitor_tick)
+        self.home_monitor_timer.setInterval(100)
+
+    def init_record_db(self):
+        db_fd, db_path = tempfile.mkstemp(
+            prefix=self.RECORD_DB_PREFIX,
+            suffix=".sqlite3",
+        )
+        os.close(db_fd)
+        self.record_db_path = db_path
+        self.record_db_conn = sqlite3.connect(db_path)
+        self.record_db_conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS xy_position_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT,
+                axis_x REAL NOT NULL,
+                axis_y REAL NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.record_db_conn.commit()
+
+    def cleanup_record_db(self):
+        if self.record_db_conn is not None:
+            try:
+                self.record_db_conn.execute("DELETE FROM xy_position_records")
+                self.record_db_conn.commit()
+            except sqlite3.Error:
+                pass
+            self.record_db_conn.close()
+            self.record_db_conn = None
+
+        if self.record_db_path and os.path.exists(self.record_db_path):
+            try:
+                os.remove(self.record_db_path)
+            except OSError:
+                pass
+            self.record_db_path = None
+
+    def get_xy_positions(self) -> List[float]:
+        positions = self.axis_pos[:]
+        if self.driver.connected:
+            xyz = self.driver.get_stage_xyz()
+            positions = [float(xyz[axis]) for axis in self.AXIS_NAMES]
+            self.axis_pos = positions
+        return [positions[index] for index in self.XY_AXIS_INDICES]
+
+    def save_xy_record(self, positions: List[float]) -> int:
+        if self.record_db_conn is None:
+            raise RuntimeError("record database is not initialized")
+
+        cursor = self.record_db_conn.execute(
+            """
+            INSERT INTO xy_position_records (label, axis_x, axis_y)
+            VALUES (?, ?, ?)
+            """,
+            (None, positions[0], positions[1]),
+        )
+        self.record_db_conn.commit()
+        return int(cursor.lastrowid)
+
+    def format_record_label(self, record_id: int, label: Optional[str]) -> str:
+        normalized = (label or "").strip()
+        return normalized if normalized else f"记录 #{record_id}"
+
+    def rename_record(self, record_id: int, label: str):
+        if self.record_db_conn is None:
+            raise RuntimeError("record database is not initialized")
+
+        normalized = label.strip()
+        self.record_db_conn.execute(
+            """
+            UPDATE xy_position_records
+            SET label = ?
+            WHERE id = ?
+            """,
+            (normalized or None, record_id),
+        )
+        self.record_db_conn.commit()
+
+    def get_record_item_id(self, item: QListWidgetItem) -> Optional[int]:
+        record_id = item.data(Qt.ItemDataRole.UserRole)
+        return int(record_id) if record_id is not None else None
+
+    def fetch_record_targets(self, record_id: int) -> Optional[List[float]]:
+        if self.record_db_conn is None:
+            return None
+
+        row = self.record_db_conn.execute(
+            """
+            SELECT axis_x, axis_y
+            FROM xy_position_records
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return [float(row[0]), float(row[1])]
+
+    def clear_record_db(self):
+        if self.record_db_conn is None:
+            return
+        self.record_db_conn.execute("DELETE FROM xy_position_records")
+        self.record_db_conn.commit()
+
+    def get_autofocus_config_path(self) -> str:
+        base_dir = Path(os.environ.get("APPDATA") or Path.home() / ".config")
+        return str(base_dir / "motion-control" / self.AUTOFOCUS_CONFIG_FILENAME)
+
+    def load_autofocus_positions(self) -> dict[str, float]:
+        path = Path(self.autofocus_config_path)
+        if not path.exists():
+            return {}
+
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        positions: dict[str, float] = {}
+        for objective in self.AUTOFOCUS_OBJECTIVES:
+            if objective in raw and raw[objective] is not None:
+                positions[objective] = float(raw[objective])
+        return positions
+
+    def save_autofocus_positions(self, positions: dict[str, float]) -> None:
+        path = Path(self.autofocus_config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            objective: float(positions[objective])
+            for objective in self.AUTOFOCUS_OBJECTIVES
+            if objective in positions
+        }
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+
+    def refresh_record_list(self):
+        if not hasattr(self, "record_list") or self.record_db_conn is None:
+            return
+
+        rows = self.record_db_conn.execute(
+            "SELECT id, label FROM xy_position_records ORDER BY id"
+        )
+        self.record_list.clear()
+        for record_id, label in rows:
+            item = QListWidgetItem(self.format_record_label(int(record_id), label))
+            item.setData(Qt.ItemDataRole.UserRole, int(record_id))
+            self.record_list.addItem(item)
+
+    def move_to_recorded_xy_position(self, targets: List[float]) -> bool:
+        if not self.driver.connected:
+            return False
+
+        self.driver.move_gpx(f"{targets[0]:g}")
+        self.driver.move_gpy(f"{targets[1]:g}")
+        return True
+
+    def init_ui(self):
+        main_layout = QHBoxLayout(self)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
+        left_layout.addWidget(self.create_comm_group())
+        left_layout.addWidget(self.create_position_group())
+        left_layout.addWidget(self.create_log_group())
+        main_layout.addWidget(left_panel, stretch=1)
+
+        middle_panel = QWidget()
+        middle_layout = QVBoxLayout(middle_panel)
+        middle_layout.addWidget(self.create_manual_control())
+        main_layout.addWidget(middle_panel, stretch=1)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.addWidget(self.create_record_group(), stretch=1)
+        self.illumination_group = self.create_illumination_group()
+        self.optical_groups = [
+            self.illumination_group,
+        ]
+        for group in self.optical_groups:
+            right_layout.addWidget(group)
+        main_layout.addWidget(right_panel, stretch=1)
+
+    def create_comm_group(self) -> QGroupBox:
+        group = QGroupBox("通信配置")
+        layout = QGridLayout(group)
+
+        layout.addWidget(QLabel("串口:"), 0, 0)
+        self.serial_combo = QComboBox()
+        self.serial_combo.addItems(["COM7"])
+        layout.addWidget(self.serial_combo, 0, 1)
+
+        btn_refresh_ports = QPushButton("刷新")
+        btn_refresh_ports.clicked.connect(self.refresh_serial_ports)
+        layout.addWidget(btn_refresh_ports, 0, 2)
+
+        layout.addWidget(QLabel("波特率:"), 1, 0)
+        self.baud_combo = QComboBox()
+        self.baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
+        self.baud_combo.setCurrentText("115200")
+        layout.addWidget(self.baud_combo, 1, 1)
+
+        self.btn_serial_open = QPushButton("打开串口")
+        self.btn_serial_open.clicked.connect(self.on_serial_connect)
+        layout.addWidget(self.btn_serial_open, 2, 0)
+
+        self.btn_serial_close = QPushButton("关闭串口")
+        self.btn_serial_close.clicked.connect(self.on_serial_disconnect)
+        self.btn_serial_close.setEnabled(False)
+        layout.addWidget(self.btn_serial_close, 2, 1)
+
+        self.nexcope_status_label = QLabel("未连接")
+        layout.addWidget(self.nexcope_status_label, 3, 0, 1, 2)
+
+        self.nexcope_conn_indicator = QFrame()
+        self.nexcope_conn_indicator.setFixedSize(20, 20)
+        self.nexcope_conn_indicator.setStyleSheet("background-color: gray; border-radius: 10px;")
+        layout.addWidget(self.nexcope_conn_indicator, 3, 2)
+
+        return group
+
+    def create_position_group(self) -> QGroupBox:
+        group = QGroupBox("轴位置")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("轴"), 0, 0)
+        layout.addWidget(QLabel("位置"), 0, 1)
+
+        self.pos_labels = []
+        for row, axis in enumerate(self.AXIS_NAMES, start=1):
+            layout.addWidget(QLabel(axis), row, 0)
+            value_label = QLabel("0")
+            value_label.setStyleSheet("color: #00ff00; font-family: monospace;")
+            layout.addWidget(value_label, row, 1)
+            self.pos_labels.append(value_label)
+        return group
+
+    def create_log_group(self) -> QGroupBox:
+        group = QGroupBox("信息输出")
+        layout = QVBoxLayout(group)
+
+        self.info_text = QTextEdit()
+        self.info_text.setReadOnly(True)
+        self.info_text.setMaximumHeight(180)
+        self.info_text.setStyleSheet("font-family: monospace; font-size: 10px;")
+        layout.addWidget(self.info_text)
+
+        clear_btn = QPushButton("清空日志")
+        clear_btn.clicked.connect(lambda: self.info_text.clear())
+        layout.addWidget(clear_btn)
+        return group
+
+    def create_manual_control(self) -> QGroupBox:
+        group = QGroupBox("手动控制")
+        layout = QGridLayout(group)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(8)
+        layout.setColumnStretch(0, 2)
+        for column in range(1, 5):
+            layout.setColumnStretch(column, 9)
+        layout.setColumnStretch(5, 2)
+
+        self.manual_speed = QDoubleSpinBox()
+        self.manual_speed.setRange(0.001, 10)
+        self.manual_speed.setValue(1.0)
+        self.manual_speed.setDecimals(3)
+        self.manual_speed.setSingleStep(0.001)
+        speed_label = QLabel("速度(mm/s):")
+        speed_label.setMinimumWidth(110)
+        speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(speed_label, 0, 1)
+        layout.addWidget(self.manual_speed, 0, 2, 1, 3)
+
+        for row, axis in enumerate(self.AXIS_NAMES, start=1):
+            btn_neg = QPushButton(f"{axis}-")
+            btn_neg.setMinimumSize(120, 44)
+            btn_neg.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, -1))
+            btn_neg.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
+            layout.addWidget(btn_neg, row, 1, 1, 2)
+
+            btn_pos = QPushButton(f"{axis}+")
+            btn_pos.setMinimumSize(120, 44)
+            btn_pos.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, 1))
+            btn_pos.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
+            layout.addWidget(btn_pos, row, 3, 1, 2)
+
+        btn_home = QPushButton("回零")
+        btn_home.clicked.connect(self.on_move_to_center)
+        layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 1, 1, 4)
+
+        autofocus_row = len(self.AXIS_NAMES) + 2
+        layout.addWidget(QLabel("自动对焦"), autofocus_row, 1)
+        self.autofocus_combo = QComboBox()
+        self.autofocus_combo.addItems(["x10", "x50", "x100"])
+        layout.addWidget(self.autofocus_combo, autofocus_row, 2)
+
+        btn_autofocus_calibrate = QPushButton("校准")
+        btn_autofocus_calibrate.clicked.connect(self.on_autofocus_calibrate)
+        layout.addWidget(btn_autofocus_calibrate, autofocus_row, 3)
+
+        btn_autofocus_go = QPushButton("前往")
+        btn_autofocus_go.clicked.connect(self.on_autofocus_go)
+        layout.addWidget(btn_autofocus_go, autofocus_row, 4)
+
+        return group
+
+    def create_record_group(self) -> QGroupBox:
+        group = QGroupBox("XY位置记录")
+        layout = QVBoxLayout(group)
+
+        self.btn_record_position = QPushButton("记录当前 XY")
+        self.btn_record_position.clicked.connect(self.on_record_position)
+        layout.addWidget(self.btn_record_position)
+
+        self.record_list = QListWidget()
+        self.record_list.itemDoubleClicked.connect(self.on_record_item_double_clicked)
+        layout.addWidget(self.record_list)
+
+        self.btn_rename_record = QPushButton("重命名")
+        self.btn_rename_record.clicked.connect(self.on_rename_record)
+        layout.addWidget(self.btn_rename_record)
+
+        btn_clear = QPushButton("清空记录")
+        btn_clear.clicked.connect(self.on_clear_records)
+        layout.addWidget(btn_clear)
+
+        tip_label = QLabel("仅记录 XY，双击执行 XY 跳转；Z 焦距不进入记录。")
+        tip_label.setStyleSheet("color: #aaaaaa;")
+        layout.addWidget(tip_label)
+        return group
+
+    def create_illumination_group(self) -> QGroupBox:
+        group = QGroupBox("照明控制")
+        layout = QGridLayout(group)
+        layout.addWidget(QLabel("上光路亮度"), 0, 0)
+        self.upper_light_slider = QSlider(Qt.Orientation.Horizontal)
+        self.upper_light_slider.setRange(0, 1000)
+        self.upper_light_slider.valueChanged.connect(self.on_illumination_slider_changed)
+        self.upper_light_slider.sliderReleased.connect(self.on_illumination_slider_released)
+        layout.addWidget(self.upper_light_slider, 0, 1)
+        self.upper_light_percent = QLabel("未读取")
+        layout.addWidget(self.upper_light_percent, 0, 2)
+
+        layout.addWidget(QLabel("下光路亮度"), 1, 0)
+        self.lower_light_slider = QSlider(Qt.Orientation.Horizontal)
+        self.lower_light_slider.setRange(0, 1000)
+        self.lower_light_slider.valueChanged.connect(self.on_illumination_slider_changed)
+        self.lower_light_slider.sliderReleased.connect(self.on_illumination_slider_released)
+        layout.addWidget(self.lower_light_slider, 1, 1)
+        self.lower_light_percent = QLabel("未读取")
+        layout.addWidget(self.lower_light_percent, 1, 2)
+
+        btn_refresh = QPushButton("读取")
+        btn_refresh.clicked.connect(self.refresh_illumination_group)
+        layout.addWidget(btn_refresh, 2, 0, 1, 3)
+        return group
+
+    def mark_group_unsupported(self, group_box, message="当前设备不支持该功能"):
+        group_box.setEnabled(False)
+        group_box.setToolTip(message)
+
+    def reset_group_support_state(self, group_box):
+        group_box.setEnabled(True)
+        group_box.setToolTip("")
+
+    def reset_optical_groups(self):
+        if not hasattr(self, "optical_groups"):
+            return
+        for group in self.optical_groups:
+            self.reset_group_support_state(group)
+
+    def load_optional_value(self, group_box, value_label, loader, description: str):
+        try:
+            value = loader()
+        except NotImplementedError as exc:
+            value_label.setText("不支持")
+            self.mark_group_unsupported(group_box)
+            self.log_info(f"{description} 不支持: {exc}")
+            return
+        except Exception as exc:
+            value_label.setText("读取失败")
+            self.log_info(f"{description} 读取失败: {exc}")
+            return
+
+        value_label.setText(str(value))
+
+    def refresh_illumination_group(self):
+        try:
+            levels = self.driver.get_sled_levels()
+        except NotImplementedError as exc:
+            self.mark_group_unsupported(self.illumination_group)
+            self.upper_light_percent.setText("不支持")
+            self.lower_light_percent.setText("不支持")
+            self.log_info(f"照明控制 不支持: {exc}")
+            return
+        except Exception as exc:
+            self.log_info(f"照明状态 读取失败: {exc}")
+            return
+
+        self.apply_illumination_levels(levels["ULP"], levels["DLP"])
+
+    def refresh_optical_groups(self):
+        self.refresh_illumination_group()
+
+    def format_illumination_percent(self, level: int) -> str:
+        percent = level / 10.0
+        return f"{percent:.1f}%"
+
+    def apply_illumination_levels(self, upper_light: int, lower_light: int):
+        self._updating_illumination_ui = True
+        try:
+            self.upper_light_slider.setValue(int(upper_light))
+            self.lower_light_slider.setValue(int(lower_light))
+            self.upper_light_percent.setText(self.format_illumination_percent(int(upper_light)))
+            self.lower_light_percent.setText(self.format_illumination_percent(int(lower_light)))
+        finally:
+            self._updating_illumination_ui = False
+
+    def on_illumination_slider_changed(self):
+        if self._updating_illumination_ui:
+            return
+
+        self.upper_light_percent.setText(self.format_illumination_percent(self.upper_light_slider.value()))
+        self.lower_light_percent.setText(self.format_illumination_percent(self.lower_light_slider.value()))
+        if self.driver.connected:
+            self.illumination_write_timer.start()
+
+    def flush_illumination_update(self):
+        if not self.driver.connected:
+            return
+
+        upper_light = self.upper_light_slider.value()
+        lower_light = self.lower_light_slider.value()
+        try:
+            self.driver.set_sled(upper_light, lower_light)
+        except Exception as exc:
+            self.log_info(f"照明写入失败: {exc}")
+
+    def on_illumination_slider_released(self):
+        if not self.driver.connected:
+            return
+
+        self.illumination_write_timer.stop()
+        upper_light = self.upper_light_slider.value()
+        lower_light = self.lower_light_slider.value()
+        try:
+            self.driver.set_sled(upper_light, lower_light)
+            levels = self.driver.get_sled_levels()
+            self.apply_illumination_levels(levels["ULP"], levels["DLP"])
+        except Exception as exc:
+            self.log_info(f"照明校正失败: {exc}")
+
+    def log_info(self, msg: str):
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.info_text.append(f"[{timestamp}] {msg}")
+
+    def refresh_serial_ports(self):
+        ports = ["COM7"]
+        if NEXCOPE_SERIAL_AVAILABLE:
+            try:
+                from serial.tools import list_ports
+
+                discovered = [port.device for port in list_ports.comports()]
+                if discovered:
+                    ports = discovered
+            except Exception:
+                pass
+
+        current = self.serial_combo.currentText()
+        self.serial_combo.clear()
+        self.serial_combo.addItems(ports)
+        if current in ports:
+            self.serial_combo.setCurrentText(current)
+
+    def _set_connection_state(self, connected: bool, detail: str = ""):
+        self.btn_serial_open.setEnabled(not connected)
+        self.btn_serial_close.setEnabled(connected)
+        self.nexcope_conn_indicator.setStyleSheet(
+            "background-color: lime; border-radius: 10px;" if connected
+            else "background-color: gray; border-radius: 10px;"
+        )
+        self.nexcope_status_label.setText(detail or ("已连接" if connected else "未连接"))
+
+    def on_serial_connect(self):
+        port = self.serial_combo.currentText()
+        baudrate = int(self.baud_combo.currentText())
+
+        try:
+            if self.driver.connect_serial(port, baudrate):
+                self._set_connection_state(True, f"已连接 ({port})")
+                self.log_info(f"串口连接成功: {port} @ {baudrate}")
+                self.reset_optical_groups()
+                self.update_status()
+                self.refresh_optical_groups()
+                self.update_timer.start()
+                self.illumination_poll_timer.start()
+            else:
+                self.log_info(f"串口连接失败: {port} @ {baudrate}")
+        except Exception as exc:
+            self.log_info(f"串口连接异常: {exc}")
+
+    def on_serial_disconnect(self):
+        self.on_axis_jog_stop()
+        self.update_timer.stop()
+        self.illumination_poll_timer.stop()
+        self.illumination_write_timer.stop()
+        try:
+            self.driver.disconnect()
+        finally:
+            self._set_connection_state(False, "未连接")
+            self.log_info("已断开 Nexcope 串口")
+
+    def compute_jog_step_counts(self) -> int:
+        speed_um_per_s = self.manual_speed.value() * 1000.0
+        counts_per_tick = speed_um_per_s * self.COUNTS_PER_UM * (self.JOG_INTERVAL_MS / 1000.0)
+        return max(1, int(round(counts_per_tick)))
+
+    def _send_jog_step(self) -> bool:
+        if not self.driver.connected:
+            return False
+
+        if self.active_jog_axis is None or self.active_jog_direction == 0:
+            return False
+
+        payload = f"{self.compute_jog_step_counts()}"
+        handlers = {
+            ("X", -1): self.driver.move_left,
+            ("X", 1): self.driver.move_right,
+            ("Y", -1): self.driver.move_back,
+            ("Y", 1): self.driver.move_forward,
+            ("Z", -1): self.driver.move_down,
+            ("Z", 1): self.driver.move_up,
+        }
+        handler = handlers[(self.active_jog_axis, self.active_jog_direction)]
+        handler(payload)
+        return True
+
+    def on_axis_jog_start(self, axis: str, direction: int):
+        if not self.driver.connected:
+            self.log_info("未连接，无法执行移动")
+            return
+
+        self.active_jog_axis = axis
+        self.active_jog_direction = direction
+        self.update_timer.stop()
+        try:
+            if self._send_jog_step():
+                self.jog_timer.start()
+                self.log_info(
+                    f"{axis} 轴Jog开始: speed={self.manual_speed.value():.3f}mm/s, "
+                    f"step={self.compute_jog_step_counts()} counts"
+                )
+        except Exception as exc:
+            self.active_jog_axis = None
+            self.active_jog_direction = 0
+            self.log_info(f"{axis} 轴Jog启动失败: {exc}")
+
+    def on_jog_tick(self):
+        try:
+            self._send_jog_step()
+        except Exception as exc:
+            axis = self.active_jog_axis or "?"
+            self.on_axis_jog_stop()
+            self.log_info(f"{axis} 轴Jog失败并已停止: {exc}")
+
+    def on_axis_jog_stop(self, axis: Optional[str] = None):
+        if axis is not None and axis != self.active_jog_axis:
+            return
+
+        self.jog_timer.stop()
+        self.active_jog_axis = None
+        self.active_jog_direction = 0
+        if self.driver.connected:
+            self.update_timer.start()
+
+    def on_move_to_center(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法回零")
+            return
+
+        if self._home_in_progress:
+            self.log_info("回零正在进行")
+            return
+
+        self.jog_timer.stop()
+        self.active_jog_axis = None
+        self.active_jog_direction = 0
+        self.update_timer.stop()
+        self._home_error = None
+        self._home_delta = None
+        self._home_in_progress = True
+        self._home_thread = threading.Thread(target=self._move_to_center_worker, daemon=True)
+        self._home_thread.start()
+        self.home_monitor_timer.start()
+        self.log_info("回零开始")
+
+    def _send_move_to_center_commands(self) -> tuple[int, int]:
+        center_x = int(round(self.CENTER_XY_UM[0] * self.COUNTS_PER_UM))
+        center_y = int(round(self.CENTER_XY_UM[1] * self.COUNTS_PER_UM))
+        xyz = self.driver.get_stage_xyz()
+        delta_x = center_x - int(xyz["X"])
+        delta_y = center_y - int(xyz["Y"])
+
+        if delta_x < 0:
+            self.driver.move_left(f"{abs(delta_x)}")
+        elif delta_x > 0:
+            self.driver.move_right(f"{delta_x}")
+
+        if delta_y < 0:
+            self.driver.move_back(f"{abs(delta_y)}")
+        elif delta_y > 0:
+            self.driver.move_forward(f"{delta_y}")
+
+        return delta_x, delta_y
+
+    def _move_to_center_worker(self):
+        try:
+            self._home_delta = self._send_move_to_center_commands()
+        except Exception as exc:
+            self._home_error = exc
+        finally:
+            self._home_in_progress = False
+
+    def on_home_monitor_tick(self):
+        if self._home_in_progress:
+            return
+
+        self.home_monitor_timer.stop()
+        if self._home_error is not None:
+            self.log_info(f"回零失败: {self._home_error}")
+        elif self._home_delta is not None:
+            delta_x, delta_y = self._home_delta
+            self.log_info(f"回零完成: dX={delta_x}, dY={delta_y}")
+        if self.driver.connected:
+            self.update_timer.start()
+
+    def on_autofocus_calibrate(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法校准自动对焦")
+            return
+
+        objective = self.autofocus_combo.currentText()
+        try:
+            xyz = self.driver.get_stage_xyz()
+            z_position = float(xyz["Z"])
+            positions = self.load_autofocus_positions()
+            positions[objective] = z_position
+            self.save_autofocus_positions(positions)
+            self.log_info(f"自动对焦 {objective} 已校准: Z={z_position:g}")
+        except Exception as exc:
+            self.log_info(f"自动对焦 {objective} 校准失败: {exc}")
+
+    def on_autofocus_go(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法前往自动对焦位置")
+            return
+
+        objective = self.autofocus_combo.currentText()
+        positions = self.load_autofocus_positions()
+        if objective not in positions:
+            self.log_info(f"自动对焦 {objective} 尚未校准")
+            return
+
+        try:
+            target_z = float(positions[objective])
+            xyz = self.driver.get_stage_xyz()
+            current_z = float(xyz["Z"])
+            delta_z = target_z - current_z
+            if delta_z > 0:
+                self.driver.move_up(f"{delta_z:g}")
+            elif delta_z < 0:
+                self.driver.move_down(f"{abs(delta_z):g}")
+            self.log_info(f"自动对焦 {objective} 前往完成: dZ={delta_z:g}")
+        except Exception as exc:
+            self.log_info(f"自动对焦 {objective} 前往失败: {exc}")
+
+    def on_record_position(self):
+        if not self.driver.connected:
+            self.log_info("未连接或无法读取 XY 位置，记录失败")
+            return
+
+        try:
+            positions = self.get_xy_positions()
+        except Exception as exc:
+            self.log_info(f"读取 XY 位置失败: {exc}")
+            return
+
+        record_id = self.save_xy_record(positions)
+        self.refresh_record_list()
+        self.log_info(f"已记录 XY 位置 #{record_id}: X={positions[0]:g}, Y={positions[1]:g}")
+
+    def on_record_item_double_clicked(self, item):
+        record_id = self.get_record_item_id(item)
+        if record_id is None:
+            self.log_info("无法识别当前记录")
+            return
+
+        targets = self.fetch_record_targets(record_id)
+        if targets is None:
+            self.log_info(f"未找到记录 #{record_id}")
+            return
+
+        try:
+            if self.move_to_recorded_xy_position(targets):
+                self.log_info(f"跳转到 XY 记录 #{record_id}: X={targets[0]:g}, Y={targets[1]:g}")
+            else:
+                self.log_info("未连接，无法执行 XY 跳转")
+        except Exception as exc:
+            self.log_info(f"XY 跳转失败: {exc}")
+
+    def on_rename_record(self):
+        current_item = self.record_list.currentItem()
+        if current_item is None:
+            self.log_info("请先选择一条记录")
+            return
+
+        record_id = self.get_record_item_id(current_item)
+        if record_id is None:
+            self.log_info("无法识别当前记录")
+            return
+
+        current_label = current_item.text()
+        new_label, ok = QInputDialog.getText(self, "重命名记录", "记录名称:", text=current_label)
+        if not ok:
+            return
+
+        self.rename_record(record_id, new_label)
+        self.refresh_record_list()
+        self.log_info(f"记录 #{record_id} 已重命名为: {self.format_record_label(record_id, new_label)}")
+
+    def on_clear_records(self):
+        self.clear_record_db()
+        self.refresh_record_list()
+        self.log_info("已清空 Nexcope XY 位置记录")
+
+    def update_status(self):
+        if not self.driver.connected:
+            return
+
+        try:
+            xyz = self.driver.get_stage_xyz()
+            self.axis_pos = [float(xyz[axis]) for axis in self.AXIS_NAMES]
+            for label, axis in zip(self.pos_labels, self.AXIS_NAMES):
+                label.setText(f"{xyz[axis]}")
+        except Exception as exc:
+            self.log_info(f"状态刷新失败: {exc}")
+
+    def shutdown(self):
+        self.on_axis_jog_stop()
+        self.update_timer.stop()
+        self.illumination_poll_timer.stop()
+        self.illumination_write_timer.stop()
+        self.home_monitor_timer.stop()
+        if self.driver.connected:
+            self.driver.disconnect()
+        self.cleanup_record_db()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
+
+
+class ControllerMainWindow(QMainWindow):
+    """Top-level shell that hosts controller pages."""
+
+    ONWAY_WINDOW_WIDTH = 980
+    ONWAY_WINDOW_HEIGHT = 760
+    NEXCOPE_WINDOW_WIDTH = 780
+    NEXCOPE_WINDOW_HEIGHT = 620
+
+    def __init__(self):
+        super().__init__()
+        self._active_connection_owner = None
+        self.onway_window = MCCMainWindow()
+        self.nexcope_page = NexcopeControlPage()
+        self._install_connection_hooks(self.onway_window)
+        self._install_connection_hooks(self.nexcope_page)
+        self.init_ui()
+
+    def _install_connection_hooks(self, page) -> None:
+        driver = getattr(page, "driver", None)
+        if driver is None:
+            return
+
+        wrapped_methods = getattr(driver, "_controller_shell_wrapped_methods", set())
+
+        for method_name in ("connect", "connect_serial"):
+            if hasattr(driver, method_name) and method_name not in wrapped_methods:
+                original_method = getattr(driver, method_name)
+
+                def connect_wrapper(*args, _original=original_method, _page=page, _method_name=method_name, **kwargs):
+                    self._handoff_connection(_page)
+                    result = _original(*args, **kwargs)
+                    if self._page_is_connected(_page):
+                        self._active_connection_owner = _page
+                        _page._active_connection_method = _method_name
+                    elif self._active_connection_owner is _page:
+                        self._active_connection_owner = None
+                        _page._active_connection_method = None
+                    return result
+
+                setattr(driver, method_name, connect_wrapper)
+                wrapped_methods.add(method_name)
+
+        if hasattr(driver, "disconnect") and "disconnect" not in wrapped_methods:
+            original_disconnect = getattr(driver, "disconnect")
+
+            def disconnect_wrapper(*args, _original=original_disconnect, _page=page, **kwargs):
+                result = _original(*args, **kwargs)
+                if self._active_connection_owner is _page and not self._page_is_connected(_page):
+                    self._active_connection_owner = None
+                if not self._page_is_connected(_page):
+                    _page._active_connection_method = None
+                return result
+
+            setattr(driver, "disconnect", disconnect_wrapper)
+            wrapped_methods.add("disconnect")
+
+        driver._controller_shell_wrapped_methods = wrapped_methods
+
+    def _page_is_connected(self, page) -> bool:
+        driver = getattr(page, "driver", None)
+        return bool(getattr(driver, "connected", False))
+
+    def _handoff_connection(self, page) -> None:
+        active_page = self._active_connection_owner
+        if active_page is None:
+            return
+        if active_page is page:
+            return
+        if not self._page_is_connected(active_page):
+            self._active_connection_owner = None
+            return
+
+        active_method = getattr(active_page, "_active_connection_method", None)
+        if active_method == "connect_serial":
+            page_disconnect = getattr(active_page, "on_serial_disconnect", None)
+            if callable(page_disconnect):
+                page_disconnect()
+                return
+        if active_method == "connect":
+            page_disconnect = getattr(active_page, "on_disconnect", None)
+            if callable(page_disconnect):
+                page_disconnect()
+                return
+
+        active_driver = getattr(active_page, "driver", None)
+        disconnect = getattr(active_driver, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
+
+    def init_ui(self):
+        self.setWindowTitle("Motion Controller Shell")
+        self.resize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
+        self.setMinimumSize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
+
+        self.controller_tabs = QTabWidget()
+        self.controller_tabs.addTab(self.create_onway_page(), "Onway")
+        self.controller_tabs.addTab(self.create_nexcope_page(), "Nexcope")
+        self.controller_tabs.currentChanged.connect(self.apply_window_mode)
+        self.setCentralWidget(self.controller_tabs)
+        self.apply_window_mode(self.controller_tabs.currentIndex())
+
+    def apply_window_mode(self, tab_index: int):
+        if tab_index == 1:
+            width = self.NEXCOPE_WINDOW_WIDTH
+            height = self.NEXCOPE_WINDOW_HEIGHT
+        else:
+            width = self.ONWAY_WINDOW_WIDTH
+            height = self.ONWAY_WINDOW_HEIGHT
+
+        self.setMinimumSize(width, height)
+        self.resize(width, height)
+
+    def create_onway_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        menu_bar = self.onway_window.menuBar()
+        if menu_bar is not None:
+            layout.setMenuBar(menu_bar)
+
+        central_widget = self.onway_window.takeCentralWidget()
+        if central_widget is not None:
+            layout.addWidget(central_widget)
+
+        status_bar = self.onway_window.statusBar()
+        if status_bar is not None:
+            layout.addWidget(status_bar)
+
+        return page
+
+    def create_nexcope_page(self) -> QWidget:
+        return self.nexcope_page
+
+    def closeEvent(self, event):
+        self.onway_window.close()
+        self.nexcope_page.shutdown()
+        super().closeEvent(event)
+
+
 def main():
     app = QApplication(sys.argv)
     
@@ -1216,7 +2179,7 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
     app.setPalette(palette)
     
-    window = MCCMainWindow()
+    window = ControllerMainWindow()
     window.show()
     
     sys.exit(app.exec())
