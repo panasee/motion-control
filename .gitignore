@@ -1,2 +1,13 @@
 __pycache__/
 *.py[cod]
+.codex
+.superpowers/
+.worktrees/
+
+# Local notes and capture artifacts
+analysis.md
+usb_port_snapshot_*.json
+
+# Third-party/demo materials that should stay local only
+MCCDEMO6/
+Nexcope motorized microscope commands.pdf
