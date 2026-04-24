@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import tempfile
 import sys
 import types
 import unittest
@@ -158,10 +159,18 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertIn("self.manual_speed = QDoubleSpinBox()", source)
         self.assertIn('QLabel("速度(mm/s):")', source)
         self.assertIn("self.manual_speed.setRange(0.001, 10)", source)
+        self.assertIn("self.manual_speed.setValue(1.0)", source)
+        self.assertIn("speed_label.setMinimumWidth(110)", source)
+        self.assertIn("layout.setColumnStretch(0, 2)", source)
+        self.assertIn("for column in range(1, 5):", source)
+        self.assertIn("layout.setColumnStretch(column, 9)", source)
+        self.assertIn("layout.setColumnStretch(5, 2)", source)
         self.assertIn("JOG_INTERVAL_MS = 15", source)
         self.assertNotIn("self.manual_step = QDoubleSpinBox()", source)
-        self.assertIn("btn_neg.setMinimumSize(50, 40)", source)
-        self.assertIn("btn_pos.setMinimumSize(50, 40)", source)
+        self.assertIn("btn_neg.setMinimumSize(120, 44)", source)
+        self.assertIn("btn_pos.setMinimumSize(120, 44)", source)
+        self.assertIn("layout.addWidget(btn_neg, row, 1, 1, 2)", source)
+        self.assertIn("layout.addWidget(btn_pos, row, 3, 1, 2)", source)
         self.assertIn(".pressed.connect(", source)
         self.assertIn(".released.connect(", source)
 
@@ -182,6 +191,17 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertNotIn("运动扩展", source)
         self.assertIn('QPushButton("回零")', source)
         self.assertIn("clicked.connect(self.on_move_to_center)", source)
+
+    def test_nexcope_manual_control_declares_autofocus_controls(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('QLabel("自动对焦")', source)
+        self.assertIn("self.autofocus_combo = QComboBox()", source)
+        self.assertIn('self.autofocus_combo.addItems(["x10", "x50", "x100"])', source)
+        self.assertIn('QPushButton("校准")', source)
+        self.assertIn('QPushButton("前往")', source)
+        self.assertIn("clicked.connect(self.on_autofocus_calibrate)", source)
+        self.assertIn("clicked.connect(self.on_autofocus_go)", source)
 
 
 class NexcopePageRecordDbTests(unittest.TestCase):
@@ -350,7 +370,7 @@ class NexcopeJogTests(unittest.TestCase):
         self.assertEqual(page.active_jog_direction, 0)
         self.assertEqual(events, ["stop", "resume_status"])
 
-    def test_on_move_to_center_sends_fixed_absolute_xy_target(self) -> None:
+    def test_send_move_to_center_commands_uses_relative_xy_delta_to_fixed_center(self) -> None:
         calls = []
         logs = []
         page = object.__new__(self.module.NexcopeControlPage)
@@ -358,14 +378,71 @@ class NexcopeJogTests(unittest.TestCase):
         page.CENTER_XY_UM = (65000.0, 37500.0)
         page.driver = types.SimpleNamespace(
             connected=True,
-            move_gpx=lambda payload: calls.append(("GPX", payload)),
-            move_gpy=lambda payload: calls.append(("GPY", payload)),
+            get_stage_xyz=lambda: {"X": 6499900, "Y": 3750200, "Z": 123},
+            move_left=lambda payload: calls.append(("L", payload)),
+            move_right=lambda payload: calls.append(("R", payload)),
+            move_forward=lambda payload: calls.append(("F", payload)),
+            move_back=lambda payload: calls.append(("B", payload)),
         )
         page.log_info = logs.append
 
-        self.module.NexcopeControlPage.on_move_to_center(page)
+        delta = self.module.NexcopeControlPage._send_move_to_center_commands(page)
 
-        self.assertEqual(calls, [("GPX", "6500000"), ("GPY", "3750000")])
+        self.assertEqual(calls, [("R", "100"), ("B", "200")])
+        self.assertEqual(delta, (100, -200))
+
+    def test_on_move_to_center_starts_background_home_and_pauses_polling(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True)
+        page._home_in_progress = False
+        page._home_thread = None
+        page._home_error = None
+        page._home_delta = None
+        page.active_jog_axis = "X"
+        page.active_jog_direction = 1
+        page.jog_timer = types.SimpleNamespace(stop=lambda: events.append("stop_jog"))
+        page.update_timer = types.SimpleNamespace(stop=lambda: events.append("pause_status"))
+        page.home_monitor_timer = types.SimpleNamespace(start=lambda: events.append("start_monitor"))
+        page.log_info = lambda msg: events.append(("log", msg))
+
+        created = {}
+
+        class FakeThread:
+            def __init__(self, *, target, daemon):
+                created["target"] = target
+                created["daemon"] = daemon
+
+            def start(self):
+                events.append("start_thread")
+
+        original_thread = self.module.threading.Thread
+        self.module.threading.Thread = FakeThread
+        try:
+            self.module.NexcopeControlPage.on_move_to_center(page)
+        finally:
+            self.module.threading.Thread = original_thread
+
+        self.assertTrue(page._home_in_progress)
+        self.assertIsNone(page.active_jog_axis)
+        self.assertEqual(page.active_jog_direction, 0)
+        self.assertEqual(created["daemon"], True)
+        self.assertEqual(events, ["stop_jog", "pause_status", "start_thread", "start_monitor", ("log", "回零开始")])
+
+    def test_home_monitor_resumes_status_polling_after_background_home(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page._home_in_progress = False
+        page._home_error = None
+        page._home_delta = (100, -200)
+        page.driver = types.SimpleNamespace(connected=True)
+        page.home_monitor_timer = types.SimpleNamespace(stop=lambda: events.append("stop_monitor"))
+        page.update_timer = types.SimpleNamespace(start=lambda: events.append("resume_status"))
+        page.log_info = lambda msg: events.append(("log", msg))
+
+        self.module.NexcopeControlPage.on_home_monitor_tick(page)
+
+        self.assertEqual(events, ["stop_monitor", ("log", "回零完成: dX=100, dY=-200"), "resume_status"])
 
 
 class NexcopeIlluminationTests(unittest.TestCase):
@@ -405,6 +482,64 @@ class NexcopeIlluminationTests(unittest.TestCase):
         self.module.NexcopeControlPage.on_illumination_slider_released(page)
 
         self.assertEqual(calls, ["stop_timer", ("set", 100, 200), "readback", ("apply", 111, 222)])
+
+
+class NexcopeAutofocusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = _load_controller_module()
+
+    def test_autofocus_positions_round_trip_to_json_file(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page.autofocus_config_path = str(Path(tmpdir) / "autofocus.json")
+
+            self.module.NexcopeControlPage.save_autofocus_positions(page, {"x10": 123.5, "x100": 987.0})
+            loaded = self.module.NexcopeControlPage.load_autofocus_positions(page)
+
+        self.assertEqual(loaded, {"x10": 123.5, "x100": 987.0})
+
+    def test_autofocus_calibrate_stores_current_z_for_selected_objective(self) -> None:
+        saved = []
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True, get_stage_xyz=lambda: {"X": 1, "Y": 2, "Z": 345.5})
+        page.autofocus_combo = types.SimpleNamespace(currentText=lambda: "x50")
+        page.load_autofocus_positions = lambda: {"x10": 100.0}
+        page.save_autofocus_positions = lambda positions: saved.append(dict(positions))
+        page.log_info = logs.append
+
+        self.module.NexcopeControlPage.on_autofocus_calibrate(page)
+
+        self.assertEqual(saved, [{"x10": 100.0, "x50": 345.5}])
+
+    def test_autofocus_go_moves_z_only_to_stored_position(self) -> None:
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            get_stage_xyz=lambda: {"X": 1, "Y": 2, "Z": 1000},
+            move_up=lambda payload: calls.append(("U", payload)),
+            move_down=lambda payload: calls.append(("D", payload)),
+        )
+        page.autofocus_combo = types.SimpleNamespace(currentText=lambda: "x100")
+        page.load_autofocus_positions = lambda: {"x100": 1125.0}
+        page.log_info = lambda msg: None
+
+        self.module.NexcopeControlPage.on_autofocus_go(page)
+
+        self.assertEqual(calls, [("U", "125")])
+
+    def test_autofocus_go_requires_calibrated_selection(self) -> None:
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True)
+        page.autofocus_combo = types.SimpleNamespace(currentText=lambda: "x10")
+        page.load_autofocus_positions = lambda: {}
+        page.log_info = logs.append
+
+        self.module.NexcopeControlPage.on_autofocus_go(page)
+
+        self.assertEqual(logs, ["自动对焦 x10 尚未校准"])
 
 
 if __name__ == "__main__":

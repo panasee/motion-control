@@ -13,9 +13,12 @@ MCC 运动控制卡 - PyQt6 最简控制界面
 """
 
 import os
+import json
 import sqlite3
 import sys
 import tempfile
+import threading
+from pathlib import Path
 from typing import List, Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1204,6 +1207,8 @@ class NexcopeControlPage(QWidget):
     ILLUMINATION_POLL_INTERVAL_MS = 10000
     ILLUMINATION_WRITE_DEBOUNCE_MS = 150
     RECORD_DB_PREFIX = "nexcope-position-record-"
+    AUTOFOCUS_OBJECTIVES = ("x10", "x50", "x100")
+    AUTOFOCUS_CONFIG_FILENAME = "nexcope_autofocus.json"
     COUNTS_PER_UM = 100
     JOG_INTERVAL_MS = 15
 
@@ -1213,7 +1218,12 @@ class NexcopeControlPage(QWidget):
         self.axis_pos = [0.0] * len(self.AXIS_NAMES)
         self.active_jog_axis: Optional[str] = None
         self.active_jog_direction = 0
+        self._home_in_progress = False
+        self._home_thread: Optional[threading.Thread] = None
+        self._home_error: Optional[Exception] = None
+        self._home_delta: Optional[tuple[int, int]] = None
         self._updating_illumination_ui = False
+        self.autofocus_config_path = self.get_autofocus_config_path()
         self.record_db_path: Optional[str] = None
         self.record_db_conn: Optional[sqlite3.Connection] = None
         self.init_record_db()
@@ -1236,6 +1246,10 @@ class NexcopeControlPage(QWidget):
         self.illumination_write_timer.timeout.connect(self.flush_illumination_update)
         self.illumination_write_timer.setSingleShot(True)
         self.illumination_write_timer.setInterval(self.ILLUMINATION_WRITE_DEBOUNCE_MS)
+
+        self.home_monitor_timer = QTimer()
+        self.home_monitor_timer.timeout.connect(self.on_home_monitor_tick)
+        self.home_monitor_timer.setInterval(100)
 
     def init_record_db(self):
         db_fd, db_path = tempfile.mkstemp(
@@ -1341,6 +1355,38 @@ class NexcopeControlPage(QWidget):
             return
         self.record_db_conn.execute("DELETE FROM xy_position_records")
         self.record_db_conn.commit()
+
+    def get_autofocus_config_path(self) -> str:
+        base_dir = Path(os.environ.get("APPDATA") or Path.home() / ".config")
+        return str(base_dir / "motion-control" / self.AUTOFOCUS_CONFIG_FILENAME)
+
+    def load_autofocus_positions(self) -> dict[str, float]:
+        path = Path(self.autofocus_config_path)
+        if not path.exists():
+            return {}
+
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        positions: dict[str, float] = {}
+        for objective in self.AUTOFOCUS_OBJECTIVES:
+            if objective in raw and raw[objective] is not None:
+                positions[objective] = float(raw[objective])
+        return positions
+
+    def save_autofocus_positions(self, positions: dict[str, float]) -> None:
+        path = Path(self.autofocus_config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            objective: float(positions[objective])
+            for objective in self.AUTOFOCUS_OBJECTIVES
+            if objective in positions
+        }
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
 
     def refresh_record_list(self):
         if not hasattr(self, "record_list") or self.record_db_conn is None:
@@ -1461,31 +1507,54 @@ class NexcopeControlPage(QWidget):
     def create_manual_control(self) -> QGroupBox:
         group = QGroupBox("手动控制")
         layout = QGridLayout(group)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(8)
+        layout.setColumnStretch(0, 2)
+        for column in range(1, 5):
+            layout.setColumnStretch(column, 9)
+        layout.setColumnStretch(5, 2)
 
         self.manual_speed = QDoubleSpinBox()
         self.manual_speed.setRange(0.001, 10)
-        self.manual_speed.setValue(0.005)
+        self.manual_speed.setValue(1.0)
         self.manual_speed.setDecimals(3)
         self.manual_speed.setSingleStep(0.001)
-        layout.addWidget(QLabel("速度(mm/s):"), 0, 0)
-        layout.addWidget(self.manual_speed, 0, 1, 1, 2)
+        speed_label = QLabel("速度(mm/s):")
+        speed_label.setMinimumWidth(110)
+        speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(speed_label, 0, 1)
+        layout.addWidget(self.manual_speed, 0, 2, 1, 3)
 
         for row, axis in enumerate(self.AXIS_NAMES, start=1):
             btn_neg = QPushButton(f"{axis}-")
-            btn_neg.setMinimumSize(50, 40)
+            btn_neg.setMinimumSize(120, 44)
             btn_neg.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, -1))
             btn_neg.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
-            layout.addWidget(btn_neg, row, 0)
+            layout.addWidget(btn_neg, row, 1, 1, 2)
 
             btn_pos = QPushButton(f"{axis}+")
-            btn_pos.setMinimumSize(50, 40)
+            btn_pos.setMinimumSize(120, 44)
             btn_pos.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, 1))
             btn_pos.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
-            layout.addWidget(btn_pos, row, 1)
+            layout.addWidget(btn_pos, row, 3, 1, 2)
 
         btn_home = QPushButton("回零")
         btn_home.clicked.connect(self.on_move_to_center)
-        layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 0, 1, 2)
+        layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 1, 1, 4)
+
+        autofocus_row = len(self.AXIS_NAMES) + 2
+        layout.addWidget(QLabel("自动对焦"), autofocus_row, 1)
+        self.autofocus_combo = QComboBox()
+        self.autofocus_combo.addItems(["x10", "x50", "x100"])
+        layout.addWidget(self.autofocus_combo, autofocus_row, 2)
+
+        btn_autofocus_calibrate = QPushButton("校准")
+        btn_autofocus_calibrate.clicked.connect(self.on_autofocus_calibrate)
+        layout.addWidget(btn_autofocus_calibrate, autofocus_row, 3)
+
+        btn_autofocus_go = QPushButton("前往")
+        btn_autofocus_go.clicked.connect(self.on_autofocus_go)
+        layout.addWidget(btn_autofocus_go, autofocus_row, 4)
 
         return group
 
@@ -1765,11 +1834,101 @@ class NexcopeControlPage(QWidget):
             self.log_info("未连接，无法回零")
             return
 
+        if self._home_in_progress:
+            self.log_info("回零正在进行")
+            return
+
+        self.jog_timer.stop()
+        self.active_jog_axis = None
+        self.active_jog_direction = 0
+        self.update_timer.stop()
+        self._home_error = None
+        self._home_delta = None
+        self._home_in_progress = True
+        self._home_thread = threading.Thread(target=self._move_to_center_worker, daemon=True)
+        self._home_thread.start()
+        self.home_monitor_timer.start()
+        self.log_info("回零开始")
+
+    def _send_move_to_center_commands(self) -> tuple[int, int]:
         center_x = int(round(self.CENTER_XY_UM[0] * self.COUNTS_PER_UM))
         center_y = int(round(self.CENTER_XY_UM[1] * self.COUNTS_PER_UM))
-        self.driver.move_gpx(f"{center_x}")
-        self.driver.move_gpy(f"{center_y}")
-        self.log_info(f"已发送回零命令: X={center_x}, Y={center_y}")
+        xyz = self.driver.get_stage_xyz()
+        delta_x = center_x - int(xyz["X"])
+        delta_y = center_y - int(xyz["Y"])
+
+        if delta_x < 0:
+            self.driver.move_left(f"{abs(delta_x)}")
+        elif delta_x > 0:
+            self.driver.move_right(f"{delta_x}")
+
+        if delta_y < 0:
+            self.driver.move_back(f"{abs(delta_y)}")
+        elif delta_y > 0:
+            self.driver.move_forward(f"{delta_y}")
+
+        return delta_x, delta_y
+
+    def _move_to_center_worker(self):
+        try:
+            self._home_delta = self._send_move_to_center_commands()
+        except Exception as exc:
+            self._home_error = exc
+        finally:
+            self._home_in_progress = False
+
+    def on_home_monitor_tick(self):
+        if self._home_in_progress:
+            return
+
+        self.home_monitor_timer.stop()
+        if self._home_error is not None:
+            self.log_info(f"回零失败: {self._home_error}")
+        elif self._home_delta is not None:
+            delta_x, delta_y = self._home_delta
+            self.log_info(f"回零完成: dX={delta_x}, dY={delta_y}")
+        if self.driver.connected:
+            self.update_timer.start()
+
+    def on_autofocus_calibrate(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法校准自动对焦")
+            return
+
+        objective = self.autofocus_combo.currentText()
+        try:
+            xyz = self.driver.get_stage_xyz()
+            z_position = float(xyz["Z"])
+            positions = self.load_autofocus_positions()
+            positions[objective] = z_position
+            self.save_autofocus_positions(positions)
+            self.log_info(f"自动对焦 {objective} 已校准: Z={z_position:g}")
+        except Exception as exc:
+            self.log_info(f"自动对焦 {objective} 校准失败: {exc}")
+
+    def on_autofocus_go(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法前往自动对焦位置")
+            return
+
+        objective = self.autofocus_combo.currentText()
+        positions = self.load_autofocus_positions()
+        if objective not in positions:
+            self.log_info(f"自动对焦 {objective} 尚未校准")
+            return
+
+        try:
+            target_z = float(positions[objective])
+            xyz = self.driver.get_stage_xyz()
+            current_z = float(xyz["Z"])
+            delta_z = target_z - current_z
+            if delta_z > 0:
+                self.driver.move_up(f"{delta_z:g}")
+            elif delta_z < 0:
+                self.driver.move_down(f"{abs(delta_z):g}")
+            self.log_info(f"自动对焦 {objective} 前往完成: dZ={delta_z:g}")
+        except Exception as exc:
+            self.log_info(f"自动对焦 {objective} 前往失败: {exc}")
 
     def on_record_position(self):
         if not self.driver.connected:
@@ -1847,6 +2006,7 @@ class NexcopeControlPage(QWidget):
         self.update_timer.stop()
         self.illumination_poll_timer.stop()
         self.illumination_write_timer.stop()
+        self.home_monitor_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
         self.cleanup_record_db()
@@ -1965,8 +2125,8 @@ class ControllerMainWindow(QMainWindow):
             width = self.ONWAY_WINDOW_WIDTH
             height = self.ONWAY_WINDOW_HEIGHT
 
-        self.resize(width, height)
         self.setMinimumSize(width, height)
+        self.resize(width, height)
 
     def create_onway_page(self) -> QWidget:
         page = QWidget()

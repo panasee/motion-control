@@ -311,13 +311,13 @@ class ControllerShellConnectionHandoffTest(unittest.TestCase):
         shell.ONWAY_WINDOW_HEIGHT = 760
         shell.NEXCOPE_WINDOW_WIDTH = 780
         shell.NEXCOPE_WINDOW_HEIGHT = 620
-        shell.resize = lambda w, h: setattr(shell, "_last_resize", (w, h))
-        shell.setMinimumSize = lambda w, h: setattr(shell, "_last_min_size", (w, h))
+        events = []
+        shell.resize = lambda w, h: events.append(("resize", w, h))
+        shell.setMinimumSize = lambda w, h: events.append(("minimum", w, h))
 
         self.ControllerMainWindow.apply_window_mode(shell, 1)
 
-        self.assertEqual(shell._last_resize, (780, 620))
-        self.assertEqual(shell._last_min_size, (780, 620))
+        self.assertEqual(events, [("minimum", 780, 620), ("resize", 780, 620)])
 
     def test_apply_window_mode_restores_onway_size_for_onway_tab(self) -> None:
         shell = self._make_shell()
