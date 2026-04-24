@@ -67,6 +67,13 @@ class NexcopeDriverProtocolTest(unittest.TestCase):
 
         self.assertEqual(parsed, {"ULP": "600_1"})
 
+    def test_parse_sled_response_extracts_upper_and_lower_levels(self) -> None:
+        from nexcope_driver import parse_sled_response
+
+        parsed = parse_sled_response("ULP:600, DLP:10")
+
+        self.assertEqual(parsed, {"ULP": 600, "DLP": 10})
+
     def test_parse_error_response_extracts_negative_code(self) -> None:
         from nexcope_driver import parse_error_response
 
@@ -324,33 +331,53 @@ class NexcopeDriverSerialShapeTest(unittest.TestCase):
 
         self.assertEqual(
             fake_serial.written,
-            [b"L10\r", b"R20\r", b"F30\r", b"B40\r", b"U50\r", b"D60\r"],
+            [b"L 10\r", b"R 20\r", b"F 30\r", b"B 40\r", b"U 50\r", b"D 60\r"],
         )
 
-    def test_optical_wrappers_query_supported_lines(self) -> None:
+    def test_relative_move_consumes_ack_before_next_status_read(self) -> None:
         from nexcope_driver import NexcopeDriver
 
         fake_serial = FakeSerial(
             responses=[
-                b"SLED:1\r",
-                b"YGTN:2\r",
-                b"JGTN:3\r",
-                b"FGTN:4\r",
-                b"WJTN:5\r",
+                b"R\r",
+                b"X:7487027, Y:7234386, Z:1508367\r",
             ]
         )
         driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
         driver.connect_serial("COM7")
 
+        driver.move_left("10")
+        xyz = driver.get_stage_xyz()
+
+        self.assertEqual(xyz, {"X": 7487027, "Y": 7234386, "Z": 1508367})
+        self.assertEqual(fake_serial.written, [b"L 10\r", b"INFRD\r"])
+
+    def test_illumination_wrappers_query_and_set_supported_lines(self) -> None:
+        from nexcope_driver import NexcopeDriver
+
+        fake_serial = FakeSerial(responses=[b"SLED:1\r"])
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
         self.assertEqual(driver.get_sled(), "SLED:1")
-        self.assertEqual(driver.get_ygtn(), "YGTN:2")
-        self.assertEqual(driver.get_jgtn(), "JGTN:3")
-        self.assertEqual(driver.get_fgtn(), "FGTN:4")
-        self.assertEqual(driver.get_wjtn(), "WJTN:5")
+        driver.set_sled(0, 0)
         self.assertEqual(
             fake_serial.written,
-            [b"SLED\r", b"YGTN\r", b"JGTN\r", b"FGTN\r", b"WJTN\r"],
+            [b"SLED\r", b"SLED 0 0\r"],
         )
+
+    def test_set_sled_consumes_write_ack_before_next_read(self) -> None:
+        from nexcope_driver import NexcopeDriver
+
+        fake_serial = FakeSerial(responses=[b"0\r", b"ULP:500, DLP:250\r"])
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
+        driver.set_sled(500, 250)
+        levels = driver.get_sled_levels()
+
+        self.assertEqual(levels, {"ULP": 500, "DLP": 250})
+        self.assertEqual(fake_serial.written, [b"SLED 500 250\r", b"SLED\r"])
 
 
 if __name__ == "__main__":

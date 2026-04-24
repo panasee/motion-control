@@ -77,6 +77,17 @@ def parse_axis_position_response(response: str, axis: str) -> int:
     return int(fields[normalized_axis])
 
 
+def parse_sled_response(response: str) -> dict[str, int]:
+    """Parse an SLED response into integer upper/lower light levels."""
+    fields = parse_info_response(response)
+    levels: dict[str, int] = {}
+    for key in ("ULP", "DLP"):
+        if key not in fields:
+            raise ValueError(f"missing SLED field: {key}")
+        levels[key] = int(fields[key])
+    return levels
+
+
 class NexcopeCommandError(RuntimeError):
     """Raised when the device returns a command error that is not unsupported."""
 
@@ -185,37 +196,31 @@ class NexcopeDriver:
         self.send_command(f"GP{payload}")
 
     def move_left(self, payload: object) -> None:
-        self.send_command(f"L{payload}")
+        self.query_supported_line(f"L {payload}")
 
     def move_right(self, payload: object) -> None:
-        self.send_command(f"R{payload}")
+        self.query_supported_line(f"R {payload}")
 
     def move_forward(self, payload: object) -> None:
-        self.send_command(f"F{payload}")
+        self.query_supported_line(f"F {payload}")
 
     def move_back(self, payload: object) -> None:
-        self.send_command(f"B{payload}")
+        self.query_supported_line(f"B {payload}")
 
     def move_up(self, payload: object) -> None:
-        self.send_command(f"U{payload}")
+        self.query_supported_line(f"U {payload}")
 
     def move_down(self, payload: object) -> None:
-        self.send_command(f"D{payload}")
+        self.query_supported_line(f"D {payload}")
 
     def get_sled(self) -> str:
         return self.query_supported_line("SLED")
 
-    def get_ygtn(self) -> str:
-        return self.query_supported_line("YGTN")
+    def get_sled_levels(self) -> dict[str, int]:
+        return parse_sled_response(self.get_sled())
 
-    def get_jgtn(self) -> str:
-        return self.query_supported_line("JGTN")
-
-    def get_fgtn(self) -> str:
-        return self.query_supported_line("FGTN")
-
-    def get_wjtn(self) -> str:
-        return self.query_supported_line("WJTN")
+    def set_sled(self, upper_light: object, lower_light: object) -> None:
+        self.query_supported_line(f"SLED {upper_light} {lower_light}")
 
     def _require_connection(self):
         if not self.connected:

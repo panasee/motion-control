@@ -65,6 +65,7 @@ def _load_controller_module():
         "QTabWidget",
         "QStatusBar",
         "QDoubleSpinBox",
+        "QSlider",
         "QFrame",
         "QMessageBox",
         "QMenuBar",
@@ -143,12 +144,44 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertIn("return self.nexcope_page", SOURCE_PATH.read_text(encoding="utf-8"))
         self.assertIn("_install_connection_hooks(self.nexcope_page)", SOURCE_PATH.read_text(encoding="utf-8"))
 
-    def test_nexcope_page_declares_ne950_group_titles(self) -> None:
+    def test_nexcope_page_declares_only_illumination_extra_group(self) -> None:
         source = SOURCE_PATH.read_text(encoding="utf-8")
 
-        for title in ["照明控制", "荧光转盘", "聚光镜", "分光镜", "物镜转盘"]:
-            self.assertIn(title, source)
+        self.assertIn("照明控制", source)
+        for title in ["荧光转盘", "聚光镜", "分光镜", "物镜转盘"]:
+            self.assertNotIn(title, source)
         self.assertIn("self.optical_groups = [", source)
+
+    def test_nexcope_manual_control_uses_speed_based_jog_ui(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("self.manual_speed = QDoubleSpinBox()", source)
+        self.assertIn('QLabel("速度(mm/s):")', source)
+        self.assertIn("self.manual_speed.setRange(0.001, 10)", source)
+        self.assertIn("JOG_INTERVAL_MS = 15", source)
+        self.assertNotIn("self.manual_step = QDoubleSpinBox()", source)
+        self.assertIn("btn_neg.setMinimumSize(50, 40)", source)
+        self.assertIn("btn_pos.setMinimumSize(50, 40)", source)
+        self.assertIn(".pressed.connect(", source)
+        self.assertIn(".released.connect(", source)
+
+    def test_nexcope_illumination_uses_percent_sliders_and_10s_polling(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("ILLUMINATION_POLL_INTERVAL_MS = 10000", source)
+        self.assertIn("self.upper_light_slider = QSlider(", source)
+        self.assertIn("self.lower_light_slider = QSlider(", source)
+        self.assertIn('QLabel("上光路亮度")', source)
+        self.assertIn('QLabel("下光路亮度")', source)
+        self.assertIn('return f"{percent:.1f}%"', source)
+        self.assertIn("self.illumination_poll_timer = QTimer()", source)
+
+    def test_nexcope_motion_group_uses_home_button_without_extension_group(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("运动扩展", source)
+        self.assertIn('QPushButton("回零")', source)
+        self.assertIn("clicked.connect(self.on_move_to_center)", source)
 
 
 class NexcopePageRecordDbTests(unittest.TestCase):
@@ -248,6 +281,130 @@ class NexcopePageRecordDbTests(unittest.TestCase):
         self.assertEqual(group.tooltip, "当前设备不支持该功能")
         self.assertEqual(label.text, "不支持")
         self.assertEqual(messages, ["分光镜 不支持: ERR-3"])
+
+
+class NexcopeJogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = _load_controller_module()
+
+    def test_compute_jog_step_counts_converts_mm_per_s_to_counts_per_tick(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.JOG_INTERVAL_MS = 100
+        page.COUNTS_PER_UM = 100
+        page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
+
+        counts = self.module.NexcopeControlPage.compute_jog_step_counts(page)
+
+        self.assertEqual(counts, 50)
+
+    def test_on_axis_jog_start_sets_active_axis_and_starts_timer(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True)
+        page.log_info = lambda msg: None
+        page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
+        page.compute_jog_step_counts = lambda: 50
+        events = []
+        page._send_jog_step = lambda: (events.append("tick") or True)
+        page.jog_timer = types.SimpleNamespace(start=lambda: events.append("start"))
+        page.update_timer = types.SimpleNamespace(stop=lambda: events.append("pause_status"))
+
+        self.module.NexcopeControlPage.on_axis_jog_start(page, "X", -1)
+
+        self.assertEqual(page.active_jog_axis, "X")
+        self.assertEqual(page.active_jog_direction, -1)
+        self.assertEqual(events, ["pause_status", "tick", "start"])
+
+    def test_on_jog_tick_routes_to_axis_specific_relative_command(self) -> None:
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            move_left=lambda payload: calls.append(("L", payload)),
+            move_right=lambda payload: calls.append(("R", payload)),
+            move_forward=lambda payload: calls.append(("F", payload)),
+            move_back=lambda payload: calls.append(("B", payload)),
+            move_up=lambda payload: calls.append(("U", payload)),
+            move_down=lambda payload: calls.append(("D", payload)),
+        )
+        page.log_info = lambda msg: None
+        page.compute_jog_step_counts = lambda: 25
+        page.active_jog_axis = "Y"
+        page.active_jog_direction = 1
+
+        self.module.NexcopeControlPage.on_jog_tick(page)
+
+        self.assertEqual(calls, [("F", "25")])
+
+    def test_on_axis_jog_stop_clears_active_jog_and_stops_timer(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.jog_timer = types.SimpleNamespace(stop=lambda: events.append("stop"))
+        page.update_timer = types.SimpleNamespace(start=lambda: events.append("resume_status"))
+        page.driver = types.SimpleNamespace(connected=True)
+        page.active_jog_axis = "Z"
+        page.active_jog_direction = -1
+
+        self.module.NexcopeControlPage.on_axis_jog_stop(page, "Z")
+
+        self.assertIsNone(page.active_jog_axis)
+        self.assertEqual(page.active_jog_direction, 0)
+        self.assertEqual(events, ["stop", "resume_status"])
+
+    def test_on_move_to_center_sends_fixed_absolute_xy_target(self) -> None:
+        calls = []
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.COUNTS_PER_UM = 100
+        page.CENTER_XY_UM = (65000.0, 37500.0)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            move_gpx=lambda payload: calls.append(("GPX", payload)),
+            move_gpy=lambda payload: calls.append(("GPY", payload)),
+        )
+        page.log_info = logs.append
+
+        self.module.NexcopeControlPage.on_move_to_center(page)
+
+        self.assertEqual(calls, [("GPX", "6500000"), ("GPY", "3750000")])
+
+
+class NexcopeIlluminationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = _load_controller_module()
+
+    def test_flush_illumination_update_writes_without_immediate_readback(self) -> None:
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            set_sled=lambda upper, lower: calls.append(("set", upper, lower)),
+            get_sled_levels=lambda: (_ for _ in ()).throw(AssertionError("readback should wait for slider release")),
+        )
+        page.upper_light_slider = types.SimpleNamespace(value=lambda: 120)
+        page.lower_light_slider = types.SimpleNamespace(value=lambda: 340)
+        page.log_info = lambda msg: calls.append(("log", msg))
+
+        self.module.NexcopeControlPage.flush_illumination_update(page)
+
+        self.assertEqual(calls, [("set", 120, 340)])
+
+    def test_slider_release_writes_and_reads_back_once(self) -> None:
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            set_sled=lambda upper, lower: calls.append(("set", upper, lower)),
+            get_sled_levels=lambda: (calls.append("readback") or {"ULP": 111, "DLP": 222}),
+        )
+        page.upper_light_slider = types.SimpleNamespace(value=lambda: 100)
+        page.lower_light_slider = types.SimpleNamespace(value=lambda: 200)
+        page.illumination_write_timer = types.SimpleNamespace(stop=lambda: calls.append("stop_timer"))
+        page.apply_illumination_levels = lambda upper, lower: calls.append(("apply", upper, lower))
+        page.log_info = lambda msg: calls.append(("log", msg))
+
+        self.module.NexcopeControlPage.on_illumination_slider_released(page)
+
+        self.assertEqual(calls, ["stop_timer", ("set", 100, 200), "readback", ("apply", 111, 222)])
 
 
 if __name__ == "__main__":

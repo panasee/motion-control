@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
-    QStatusBar, QDoubleSpinBox, QFrame,
+    QStatusBar, QDoubleSpinBox, QFrame, QSlider,
     QMessageBox, QMenuBar, QListWidget, QListWidgetItem, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
@@ -1199,13 +1199,21 @@ class NexcopeControlPage(QWidget):
 
     AXIS_NAMES = ["X", "Y", "Z"]
     XY_AXIS_INDICES = (0, 1)
+    CENTER_XY_UM = (65000.0, 37500.0)
     STATUS_UPDATE_INTERVAL_MS = 200
+    ILLUMINATION_POLL_INTERVAL_MS = 10000
+    ILLUMINATION_WRITE_DEBOUNCE_MS = 150
     RECORD_DB_PREFIX = "nexcope-position-record-"
+    COUNTS_PER_UM = 100
+    JOG_INTERVAL_MS = 15
 
     def __init__(self):
         super().__init__()
         self.driver = NexcopeDriver()
         self.axis_pos = [0.0] * len(self.AXIS_NAMES)
+        self.active_jog_axis: Optional[str] = None
+        self.active_jog_direction = 0
+        self._updating_illumination_ui = False
         self.record_db_path: Optional[str] = None
         self.record_db_conn: Optional[sqlite3.Connection] = None
         self.init_record_db()
@@ -1215,6 +1223,19 @@ class NexcopeControlPage(QWidget):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_status)
         self.update_timer.setInterval(self.STATUS_UPDATE_INTERVAL_MS)
+
+        self.jog_timer = QTimer()
+        self.jog_timer.timeout.connect(self.on_jog_tick)
+        self.jog_timer.setInterval(self.JOG_INTERVAL_MS)
+
+        self.illumination_poll_timer = QTimer()
+        self.illumination_poll_timer.timeout.connect(self.refresh_illumination_group)
+        self.illumination_poll_timer.setInterval(self.ILLUMINATION_POLL_INTERVAL_MS)
+
+        self.illumination_write_timer = QTimer()
+        self.illumination_write_timer.timeout.connect(self.flush_illumination_update)
+        self.illumination_write_timer.setSingleShot(True)
+        self.illumination_write_timer.setInterval(self.ILLUMINATION_WRITE_DEBOUNCE_MS)
 
     def init_record_db(self):
         db_fd, db_path = tempfile.mkstemp(
@@ -1356,23 +1377,14 @@ class NexcopeControlPage(QWidget):
         middle_panel = QWidget()
         middle_layout = QVBoxLayout(middle_panel)
         middle_layout.addWidget(self.create_manual_control())
-        middle_layout.addWidget(self.create_motion_status_group())
         main_layout.addWidget(middle_panel, stretch=1)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(self.create_record_group(), stretch=1)
         self.illumination_group = self.create_illumination_group()
-        self.fluorescence_group = self.create_fluorescence_group()
-        self.condenser_group = self.create_condenser_group()
-        self.beam_splitter_group = self.create_beam_splitter_group()
-        self.nosepiece_group = self.create_nosepiece_group()
         self.optical_groups = [
             self.illumination_group,
-            self.fluorescence_group,
-            self.condenser_group,
-            self.beam_splitter_group,
-            self.nosepiece_group,
         ]
         for group in self.optical_groups:
             right_layout.addWidget(group)
@@ -1450,35 +1462,31 @@ class NexcopeControlPage(QWidget):
         group = QGroupBox("手动控制")
         layout = QGridLayout(group)
 
-        self.manual_step = QDoubleSpinBox()
-        self.manual_step.setRange(1, 10000000)
-        self.manual_step.setValue(1000)
-        self.manual_step.setDecimals(0)
-        layout.addWidget(QLabel("步进:"), 0, 0)
-        layout.addWidget(self.manual_step, 0, 1, 1, 2)
+        self.manual_speed = QDoubleSpinBox()
+        self.manual_speed.setRange(0.001, 10)
+        self.manual_speed.setValue(0.005)
+        self.manual_speed.setDecimals(3)
+        self.manual_speed.setSingleStep(0.001)
+        layout.addWidget(QLabel("速度(mm/s):"), 0, 0)
+        layout.addWidget(self.manual_speed, 0, 1, 1, 2)
 
         for row, axis in enumerate(self.AXIS_NAMES, start=1):
             btn_neg = QPushButton(f"{axis}-")
-            btn_neg.clicked.connect(lambda checked=False, a=axis: self.on_axis_move(a, -1))
+            btn_neg.setMinimumSize(50, 40)
+            btn_neg.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, -1))
+            btn_neg.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
             layout.addWidget(btn_neg, row, 0)
 
             btn_pos = QPushButton(f"{axis}+")
-            btn_pos.clicked.connect(lambda checked=False, a=axis: self.on_axis_move(a, 1))
+            btn_pos.setMinimumSize(50, 40)
+            btn_pos.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, 1))
+            btn_pos.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
             layout.addWidget(btn_pos, row, 1)
 
-        return group
+        btn_home = QPushButton("回零")
+        btn_home.clicked.connect(self.on_move_to_center)
+        layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 0, 1, 2)
 
-    def create_motion_status_group(self) -> QGroupBox:
-        group = QGroupBox("运动扩展")
-        layout = QVBoxLayout(group)
-
-        tip_label = QLabel("回零、停止和 NE950 专有模块将在后续步骤接入。")
-        tip_label.setStyleSheet("color: #aaaaaa;")
-        layout.addWidget(tip_label)
-
-        btn_refresh = QPushButton("刷新当前位置")
-        btn_refresh.clicked.connect(self.update_status)
-        layout.addWidget(btn_refresh)
         return group
 
     def create_record_group(self) -> QGroupBox:
@@ -1509,59 +1517,27 @@ class NexcopeControlPage(QWidget):
     def create_illumination_group(self) -> QGroupBox:
         group = QGroupBox("照明控制")
         layout = QGridLayout(group)
-        layout.addWidget(QLabel("上光路"), 0, 0)
-        self.upper_light_value = QLabel("未读取")
-        layout.addWidget(self.upper_light_value, 0, 1)
-        layout.addWidget(QLabel("SLED"), 1, 0)
-        self.sled_value = QLabel("未读取")
-        layout.addWidget(self.sled_value, 1, 1)
+        layout.addWidget(QLabel("上光路亮度"), 0, 0)
+        self.upper_light_slider = QSlider(Qt.Orientation.Horizontal)
+        self.upper_light_slider.setRange(0, 1000)
+        self.upper_light_slider.valueChanged.connect(self.on_illumination_slider_changed)
+        self.upper_light_slider.sliderReleased.connect(self.on_illumination_slider_released)
+        layout.addWidget(self.upper_light_slider, 0, 1)
+        self.upper_light_percent = QLabel("未读取")
+        layout.addWidget(self.upper_light_percent, 0, 2)
+
+        layout.addWidget(QLabel("下光路亮度"), 1, 0)
+        self.lower_light_slider = QSlider(Qt.Orientation.Horizontal)
+        self.lower_light_slider.setRange(0, 1000)
+        self.lower_light_slider.valueChanged.connect(self.on_illumination_slider_changed)
+        self.lower_light_slider.sliderReleased.connect(self.on_illumination_slider_released)
+        layout.addWidget(self.lower_light_slider, 1, 1)
+        self.lower_light_percent = QLabel("未读取")
+        layout.addWidget(self.lower_light_percent, 1, 2)
+
         btn_refresh = QPushButton("读取")
         btn_refresh.clicked.connect(self.refresh_illumination_group)
-        layout.addWidget(btn_refresh, 2, 0, 1, 2)
-        return group
-
-    def create_fluorescence_group(self) -> QGroupBox:
-        group = QGroupBox("荧光转盘")
-        layout = QGridLayout(group)
-        layout.addWidget(QLabel("YGTN"), 0, 0)
-        self.fluorescence_value = QLabel("未读取")
-        layout.addWidget(self.fluorescence_value, 0, 1)
-        btn_refresh = QPushButton("读取")
-        btn_refresh.clicked.connect(self.refresh_fluorescence_group)
-        layout.addWidget(btn_refresh, 1, 0, 1, 2)
-        return group
-
-    def create_condenser_group(self) -> QGroupBox:
-        group = QGroupBox("聚光镜")
-        layout = QGridLayout(group)
-        layout.addWidget(QLabel("JGTN"), 0, 0)
-        self.condenser_value = QLabel("未读取")
-        layout.addWidget(self.condenser_value, 0, 1)
-        btn_refresh = QPushButton("读取")
-        btn_refresh.clicked.connect(self.refresh_condenser_group)
-        layout.addWidget(btn_refresh, 1, 0, 1, 2)
-        return group
-
-    def create_beam_splitter_group(self) -> QGroupBox:
-        group = QGroupBox("分光镜")
-        layout = QGridLayout(group)
-        layout.addWidget(QLabel("FGTN"), 0, 0)
-        self.beam_splitter_value = QLabel("未读取")
-        layout.addWidget(self.beam_splitter_value, 0, 1)
-        btn_refresh = QPushButton("读取")
-        btn_refresh.clicked.connect(self.refresh_beam_splitter_group)
-        layout.addWidget(btn_refresh, 1, 0, 1, 2)
-        return group
-
-    def create_nosepiece_group(self) -> QGroupBox:
-        group = QGroupBox("物镜转盘")
-        layout = QGridLayout(group)
-        layout.addWidget(QLabel("WJTN"), 0, 0)
-        self.nosepiece_value = QLabel("未读取")
-        layout.addWidget(self.nosepiece_value, 0, 1)
-        btn_refresh = QPushButton("读取")
-        btn_refresh.clicked.connect(self.refresh_nosepiece_group)
-        layout.addWidget(btn_refresh, 1, 0, 1, 2)
+        layout.addWidget(btn_refresh, 2, 0, 1, 3)
         return group
 
     def mark_group_unsupported(self, group_box, message="当前设备不支持该功能"):
@@ -1594,27 +1570,70 @@ class NexcopeControlPage(QWidget):
         value_label.setText(str(value))
 
     def refresh_illumination_group(self):
-        self.load_optional_value(self.illumination_group, self.upper_light_value, self.driver.get_upper_light_path, "上光路")
-        self.load_optional_value(self.illumination_group, self.sled_value, self.driver.get_sled, "照明状态")
+        try:
+            levels = self.driver.get_sled_levels()
+        except NotImplementedError as exc:
+            self.mark_group_unsupported(self.illumination_group)
+            self.upper_light_percent.setText("不支持")
+            self.lower_light_percent.setText("不支持")
+            self.log_info(f"照明控制 不支持: {exc}")
+            return
+        except Exception as exc:
+            self.log_info(f"照明状态 读取失败: {exc}")
+            return
 
-    def refresh_fluorescence_group(self):
-        self.load_optional_value(self.fluorescence_group, self.fluorescence_value, self.driver.get_ygtn, "荧光转盘")
-
-    def refresh_condenser_group(self):
-        self.load_optional_value(self.condenser_group, self.condenser_value, self.driver.get_jgtn, "聚光镜")
-
-    def refresh_beam_splitter_group(self):
-        self.load_optional_value(self.beam_splitter_group, self.beam_splitter_value, self.driver.get_fgtn, "分光镜")
-
-    def refresh_nosepiece_group(self):
-        self.load_optional_value(self.nosepiece_group, self.nosepiece_value, self.driver.get_wjtn, "物镜转盘")
+        self.apply_illumination_levels(levels["ULP"], levels["DLP"])
 
     def refresh_optical_groups(self):
         self.refresh_illumination_group()
-        self.refresh_fluorescence_group()
-        self.refresh_condenser_group()
-        self.refresh_beam_splitter_group()
-        self.refresh_nosepiece_group()
+
+    def format_illumination_percent(self, level: int) -> str:
+        percent = level / 10.0
+        return f"{percent:.1f}%"
+
+    def apply_illumination_levels(self, upper_light: int, lower_light: int):
+        self._updating_illumination_ui = True
+        try:
+            self.upper_light_slider.setValue(int(upper_light))
+            self.lower_light_slider.setValue(int(lower_light))
+            self.upper_light_percent.setText(self.format_illumination_percent(int(upper_light)))
+            self.lower_light_percent.setText(self.format_illumination_percent(int(lower_light)))
+        finally:
+            self._updating_illumination_ui = False
+
+    def on_illumination_slider_changed(self):
+        if self._updating_illumination_ui:
+            return
+
+        self.upper_light_percent.setText(self.format_illumination_percent(self.upper_light_slider.value()))
+        self.lower_light_percent.setText(self.format_illumination_percent(self.lower_light_slider.value()))
+        if self.driver.connected:
+            self.illumination_write_timer.start()
+
+    def flush_illumination_update(self):
+        if not self.driver.connected:
+            return
+
+        upper_light = self.upper_light_slider.value()
+        lower_light = self.lower_light_slider.value()
+        try:
+            self.driver.set_sled(upper_light, lower_light)
+        except Exception as exc:
+            self.log_info(f"照明写入失败: {exc}")
+
+    def on_illumination_slider_released(self):
+        if not self.driver.connected:
+            return
+
+        self.illumination_write_timer.stop()
+        upper_light = self.upper_light_slider.value()
+        lower_light = self.lower_light_slider.value()
+        try:
+            self.driver.set_sled(upper_light, lower_light)
+            levels = self.driver.get_sled_levels()
+            self.apply_illumination_levels(levels["ULP"], levels["DLP"])
+        except Exception as exc:
+            self.log_info(f"照明校正失败: {exc}")
 
     def log_info(self, msg: str):
         import datetime
@@ -1661,25 +1680,36 @@ class NexcopeControlPage(QWidget):
                 self.update_status()
                 self.refresh_optical_groups()
                 self.update_timer.start()
+                self.illumination_poll_timer.start()
             else:
                 self.log_info(f"串口连接失败: {port} @ {baudrate}")
         except Exception as exc:
             self.log_info(f"串口连接异常: {exc}")
 
     def on_serial_disconnect(self):
+        self.on_axis_jog_stop()
         self.update_timer.stop()
+        self.illumination_poll_timer.stop()
+        self.illumination_write_timer.stop()
         try:
             self.driver.disconnect()
         finally:
             self._set_connection_state(False, "未连接")
             self.log_info("已断开 Nexcope 串口")
 
-    def on_axis_move(self, axis: str, direction: int):
-        if not self.driver.connected:
-            self.log_info("未连接，无法执行移动")
-            return
+    def compute_jog_step_counts(self) -> int:
+        speed_um_per_s = self.manual_speed.value() * 1000.0
+        counts_per_tick = speed_um_per_s * self.COUNTS_PER_UM * (self.JOG_INTERVAL_MS / 1000.0)
+        return max(1, int(round(counts_per_tick)))
 
-        payload = f"{self.manual_step.value():.0f}"
+    def _send_jog_step(self) -> bool:
+        if not self.driver.connected:
+            return False
+
+        if self.active_jog_axis is None or self.active_jog_direction == 0:
+            return False
+
+        payload = f"{self.compute_jog_step_counts()}"
         handlers = {
             ("X", -1): self.driver.move_left,
             ("X", 1): self.driver.move_right,
@@ -1688,12 +1718,58 @@ class NexcopeControlPage(QWidget):
             ("Z", -1): self.driver.move_down,
             ("Z", 1): self.driver.move_up,
         }
-        handler = handlers[(axis, direction)]
+        handler = handlers[(self.active_jog_axis, self.active_jog_direction)]
+        handler(payload)
+        return True
+
+    def on_axis_jog_start(self, axis: str, direction: int):
+        if not self.driver.connected:
+            self.log_info("未连接，无法执行移动")
+            return
+
+        self.active_jog_axis = axis
+        self.active_jog_direction = direction
+        self.update_timer.stop()
         try:
-            handler(payload)
-            self.log_info(f"{axis} 轴移动命令已发送: {payload}")
+            if self._send_jog_step():
+                self.jog_timer.start()
+                self.log_info(
+                    f"{axis} 轴Jog开始: speed={self.manual_speed.value():.3f}mm/s, "
+                    f"step={self.compute_jog_step_counts()} counts"
+                )
         except Exception as exc:
-            self.log_info(f"{axis} 轴移动失败: {exc}")
+            self.active_jog_axis = None
+            self.active_jog_direction = 0
+            self.log_info(f"{axis} 轴Jog启动失败: {exc}")
+
+    def on_jog_tick(self):
+        try:
+            self._send_jog_step()
+        except Exception as exc:
+            axis = self.active_jog_axis or "?"
+            self.on_axis_jog_stop()
+            self.log_info(f"{axis} 轴Jog失败并已停止: {exc}")
+
+    def on_axis_jog_stop(self, axis: Optional[str] = None):
+        if axis is not None and axis != self.active_jog_axis:
+            return
+
+        self.jog_timer.stop()
+        self.active_jog_axis = None
+        self.active_jog_direction = 0
+        if self.driver.connected:
+            self.update_timer.start()
+
+    def on_move_to_center(self):
+        if not self.driver.connected:
+            self.log_info("未连接，无法回零")
+            return
+
+        center_x = int(round(self.CENTER_XY_UM[0] * self.COUNTS_PER_UM))
+        center_y = int(round(self.CENTER_XY_UM[1] * self.COUNTS_PER_UM))
+        self.driver.move_gpx(f"{center_x}")
+        self.driver.move_gpy(f"{center_y}")
+        self.log_info(f"已发送回零命令: X={center_x}, Y={center_y}")
 
     def on_record_position(self):
         if not self.driver.connected:
@@ -1767,7 +1843,10 @@ class NexcopeControlPage(QWidget):
             self.log_info(f"状态刷新失败: {exc}")
 
     def shutdown(self):
+        self.on_axis_jog_stop()
         self.update_timer.stop()
+        self.illumination_poll_timer.stop()
+        self.illumination_write_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
         self.cleanup_record_db()
@@ -1780,8 +1859,10 @@ class NexcopeControlPage(QWidget):
 class ControllerMainWindow(QMainWindow):
     """Top-level shell that hosts controller pages."""
 
-    DEFAULT_WINDOW_WIDTH = 980
-    DEFAULT_WINDOW_HEIGHT = 760
+    ONWAY_WINDOW_WIDTH = 980
+    ONWAY_WINDOW_HEIGHT = 760
+    NEXCOPE_WINDOW_WIDTH = 780
+    NEXCOPE_WINDOW_HEIGHT = 620
 
     def __init__(self):
         super().__init__()
@@ -1866,13 +1947,26 @@ class ControllerMainWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Motion Controller Shell")
-        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
-        self.setMinimumSize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self.resize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
+        self.setMinimumSize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
 
         self.controller_tabs = QTabWidget()
         self.controller_tabs.addTab(self.create_onway_page(), "Onway")
         self.controller_tabs.addTab(self.create_nexcope_page(), "Nexcope")
+        self.controller_tabs.currentChanged.connect(self.apply_window_mode)
         self.setCentralWidget(self.controller_tabs)
+        self.apply_window_mode(self.controller_tabs.currentIndex())
+
+    def apply_window_mode(self, tab_index: int):
+        if tab_index == 1:
+            width = self.NEXCOPE_WINDOW_WIDTH
+            height = self.NEXCOPE_WINDOW_HEIGHT
+        else:
+            width = self.ONWAY_WINDOW_WIDTH
+            height = self.ONWAY_WINDOW_HEIGHT
+
+        self.resize(width, height)
+        self.setMinimumSize(width, height)
 
     def create_onway_page(self) -> QWidget:
         page = QWidget()

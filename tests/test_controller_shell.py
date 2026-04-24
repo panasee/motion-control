@@ -68,6 +68,7 @@ def _load_controller_module():
         "QTabWidget",
         "QStatusBar",
         "QDoubleSpinBox",
+        "QSlider",
         "QFrame",
         "QMessageBox",
         "QMenuBar",
@@ -177,7 +178,7 @@ class ControllerShellStructureTest(unittest.TestCase):
         self.assertIn("ControllerMainWindow", constructed_classes)
         self.assertNotIn("MCCMainWindow", constructed_classes)
 
-    def test_switching_tabs_does_not_install_disconnect_hook(self) -> None:
+    def test_switching_tabs_installs_window_mode_handler(self) -> None:
         module = _parse_source()
         shell_class = _find_class(module, "ControllerMainWindow")
 
@@ -191,7 +192,16 @@ class ControllerShellStructureTest(unittest.TestCase):
             ):
                 current_changed_connects.append(call)
 
-        self.assertEqual(current_changed_connects, [])
+        self.assertEqual(len(current_changed_connects), 1)
+
+    def test_controller_declares_distinct_window_sizes_for_onway_and_nexcope(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("ONWAY_WINDOW_WIDTH", source)
+        self.assertIn("ONWAY_WINDOW_HEIGHT", source)
+        self.assertIn("NEXCOPE_WINDOW_WIDTH", source)
+        self.assertIn("NEXCOPE_WINDOW_HEIGHT", source)
+        self.assertIn("apply_window_mode", source)
 
 
 class ControllerShellConnectionHandoffTest(unittest.TestCase):
@@ -294,6 +304,34 @@ class ControllerShellConnectionHandoffTest(unittest.TestCase):
         )
         self.assertTrue(onway_page.driver.connected)
         self.assertIs(shell._active_connection_owner, onway_page)
+
+    def test_apply_window_mode_uses_nexcope_size_for_nexcope_tab(self) -> None:
+        shell = self._make_shell()
+        shell.ONWAY_WINDOW_WIDTH = 980
+        shell.ONWAY_WINDOW_HEIGHT = 760
+        shell.NEXCOPE_WINDOW_WIDTH = 780
+        shell.NEXCOPE_WINDOW_HEIGHT = 620
+        shell.resize = lambda w, h: setattr(shell, "_last_resize", (w, h))
+        shell.setMinimumSize = lambda w, h: setattr(shell, "_last_min_size", (w, h))
+
+        self.ControllerMainWindow.apply_window_mode(shell, 1)
+
+        self.assertEqual(shell._last_resize, (780, 620))
+        self.assertEqual(shell._last_min_size, (780, 620))
+
+    def test_apply_window_mode_restores_onway_size_for_onway_tab(self) -> None:
+        shell = self._make_shell()
+        shell.ONWAY_WINDOW_WIDTH = 980
+        shell.ONWAY_WINDOW_HEIGHT = 760
+        shell.NEXCOPE_WINDOW_WIDTH = 780
+        shell.NEXCOPE_WINDOW_HEIGHT = 620
+        shell.resize = lambda w, h: setattr(shell, "_last_resize", (w, h))
+        shell.setMinimumSize = lambda w, h: setattr(shell, "_last_min_size", (w, h))
+
+        self.ControllerMainWindow.apply_window_mode(shell, 0)
+
+        self.assertEqual(shell._last_resize, (980, 760))
+        self.assertEqual(shell._last_min_size, (980, 760))
 
 
 if __name__ == "__main__":

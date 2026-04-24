@@ -31,6 +31,7 @@ def _install_pyqt6_stubs() -> None:
         "QTabWidget",
         "QStatusBar",
         "QDoubleSpinBox",
+        "QSlider",
         "QFrame",
         "QMessageBox",
         "QMenuBar",
