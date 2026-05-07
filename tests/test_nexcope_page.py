@@ -244,6 +244,33 @@ class NexcopePageRecordDbTests(unittest.TestCase):
 
         self.assertEqual(messages, ["未连接或无法读取 XY 位置，记录失败"])
 
+    def test_on_record_position_schedules_stage_read_without_blocking_gui(self) -> None:
+        scheduled = []
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True)
+        page.get_xy_positions = lambda: (calls.append("read_xy") or [12.0, 34.0])
+        page.save_xy_record = lambda positions: (calls.append(("save", positions)) or 9)
+        page.refresh_record_list = lambda: calls.append("refresh")
+        page.log_info = lambda msg: calls.append(("log", msg))
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
+
+        self.module.NexcopeControlPage.on_record_position(page)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(len(scheduled), 1)
+        worker, on_success, _on_error, pause_polling = scheduled[0]
+        self.assertTrue(pause_polling)
+        positions = worker()
+        on_success(positions)
+        self.assertEqual(
+            calls,
+            ["read_xy", ("save", [12.0, 34.0]), "refresh", ("log", "已记录 XY 位置 #9: X=12, Y=34")],
+        )
+
     def test_move_to_recorded_xy_position_uses_relative_delta_commands(self) -> None:
         calls = []
         page = object.__new__(self.module.NexcopeControlPage)
@@ -262,6 +289,31 @@ class NexcopePageRecordDbTests(unittest.TestCase):
 
         self.assertTrue(moved)
         self.assertEqual(calls, [("R", "100"), ("B", "300")])
+
+    def test_record_double_click_schedules_xy_jump_without_blocking_gui(self) -> None:
+        scheduled = []
+        calls = []
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.get_record_item_id = lambda item: 7
+        page.fetch_record_targets = lambda record_id: [1000.0, 2000.0]
+        page.move_to_recorded_xy_position = lambda targets: (calls.append(("move", targets)) or True)
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
+        page.log_info = logs.append
+
+        self.module.NexcopeControlPage.on_record_item_double_clicked(page, object())
+
+        self.assertEqual(calls, [])
+        self.assertEqual(len(scheduled), 1)
+        worker, on_success, _on_error, pause_polling = scheduled[0]
+        self.assertTrue(pause_polling)
+        result = worker()
+        on_success(result)
+        self.assertEqual(calls, [("move", [1000.0, 2000.0])])
+        self.assertEqual(logs, ["跳转到 XY 记录 #7: X=1000, Y=2000"])
 
     def test_mark_group_unsupported_disables_group_and_sets_tooltip(self) -> None:
         page = object.__new__(self.module.NexcopeControlPage)
@@ -390,6 +442,69 @@ class NexcopeJogTests(unittest.TestCase):
         self.assertEqual(page._jog_error_count, 0)
         self.assertEqual(events, ["stop", "resume_status"])
 
+    def test_serial_task_callbacks_run_from_result_timer_and_resume_polling(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(connected=True)
+        page._serial_io_lock = self.module.threading.Lock()
+        page._serial_task_results = self.module.Queue()
+        page._serial_task_pending_count = 0
+        page._serial_task_pause_count = 0
+        page.update_timer = types.SimpleNamespace(
+            stop=lambda: events.append("pause_status"),
+            start=lambda: events.append("resume_status"),
+        )
+        page.illumination_poll_timer = types.SimpleNamespace(
+            stop=lambda: events.append("pause_illumination"),
+            start=lambda: events.append("resume_illumination"),
+        )
+        page.serial_task_timer = types.SimpleNamespace(
+            start=lambda: events.append("start_result_timer"),
+            stop=lambda: events.append("stop_result_timer"),
+        )
+        page.log_info = lambda msg: events.append(("log", msg))
+
+        class FakeThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                events.append(("start_thread", self.daemon))
+                self.target()
+
+        original_thread = self.module.threading.Thread
+        self.module.threading.Thread = FakeThread
+        try:
+            self.module.NexcopeControlPage.run_nexcope_serial_task(
+                page,
+                lambda: "done",
+                on_success=lambda result: events.append(("success", result)),
+            )
+        finally:
+            self.module.threading.Thread = original_thread
+
+        self.assertEqual(
+            events,
+            ["pause_status", "pause_illumination", ("start_thread", True), "start_result_timer"],
+        )
+
+        self.module.NexcopeControlPage.on_serial_task_result_tick(page)
+
+        self.assertEqual(
+            events,
+            [
+                "pause_status",
+                "pause_illumination",
+                ("start_thread", True),
+                "start_result_timer",
+                ("success", "done"),
+                "resume_status",
+                "resume_illumination",
+                "stop_result_timer",
+            ],
+        )
+
     def test_on_jog_tick_keeps_running_after_transient_send_failure(self) -> None:
         events = []
         page = object.__new__(self.module.NexcopeControlPage)
@@ -423,6 +538,7 @@ class NexcopeJogTests(unittest.TestCase):
         self.assertEqual(events, ["stop", ("log", "Y 轴Jog连续失败并已停止: serial busy")])
 
     def test_update_status_suppresses_transient_missing_xyz_response(self) -> None:
+        scheduled = []
         logs = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
@@ -432,12 +548,25 @@ class NexcopeJogTests(unittest.TestCase):
         page.log_info = logs.append
         page.AXIS_NAMES = ["X", "Y", "Z"]
         page.pos_labels = []
+        page._status_update_pending = False
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.update_status(page)
 
+        self.assertEqual(len(scheduled), 1)
+        worker, _on_success, on_error, pause_polling = scheduled[0]
+        self.assertFalse(pause_polling)
+        with self.assertRaises(ValueError):
+            worker()
+        on_error(ValueError("missing XYZ field: X"))
         self.assertEqual(logs, [])
+        self.assertFalse(page._status_update_pending)
 
     def test_update_status_logs_non_transient_status_errors(self) -> None:
+        scheduled = []
         logs = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
@@ -445,10 +574,20 @@ class NexcopeJogTests(unittest.TestCase):
             get_stage_xyz=lambda: (_ for _ in ()).throw(RuntimeError("serial offline")),
         )
         page.log_info = logs.append
+        page._status_update_pending = False
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.update_status(page)
 
+        self.assertEqual(len(scheduled), 1)
+        _worker, _on_success, on_error, pause_polling = scheduled[0]
+        self.assertFalse(pause_polling)
+        on_error(RuntimeError("serial offline"))
         self.assertEqual(logs, ["状态刷新失败: serial offline"])
+        self.assertFalse(page._status_update_pending)
 
     def test_send_move_to_center_commands_uses_relative_xy_delta_to_fixed_center(self) -> None:
         calls = []
@@ -530,6 +669,7 @@ class NexcopeIlluminationTests(unittest.TestCase):
         self.module = _load_controller_module()
 
     def test_flush_illumination_update_writes_without_immediate_readback(self) -> None:
+        scheduled = []
         calls = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
@@ -540,12 +680,22 @@ class NexcopeIlluminationTests(unittest.TestCase):
         page.upper_light_slider = types.SimpleNamespace(value=lambda: 120)
         page.lower_light_slider = types.SimpleNamespace(value=lambda: 340)
         page.log_info = lambda msg: calls.append(("log", msg))
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.flush_illumination_update(page)
 
+        self.assertEqual(calls, [])
+        self.assertEqual(len(scheduled), 1)
+        worker, _on_success, _on_error, pause_polling = scheduled[0]
+        self.assertFalse(pause_polling)
+        worker()
         self.assertEqual(calls, [("set", 120, 340)])
 
     def test_slider_release_writes_and_reads_back_once(self) -> None:
+        scheduled = []
         calls = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
@@ -558,9 +708,19 @@ class NexcopeIlluminationTests(unittest.TestCase):
         page.illumination_write_timer = types.SimpleNamespace(stop=lambda: calls.append("stop_timer"))
         page.apply_illumination_levels = lambda upper, lower: calls.append(("apply", upper, lower))
         page.log_info = lambda msg: calls.append(("log", msg))
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.on_illumination_slider_released(page)
 
+        self.assertEqual(calls, ["stop_timer"])
+        self.assertEqual(len(scheduled), 1)
+        worker, on_success, _on_error, pause_polling = scheduled[0]
+        self.assertFalse(pause_polling)
+        levels = worker()
+        on_success(levels)
         self.assertEqual(calls, ["stop_timer", ("set", 100, 200), "readback", ("apply", 111, 222)])
 
 
@@ -579,6 +739,7 @@ class NexcopeAutofocusTests(unittest.TestCase):
         self.assertEqual(loaded, {"x10": 123.5, "x100": 987.0})
 
     def test_autofocus_calibrate_stores_current_z_for_selected_objective(self) -> None:
+        scheduled = []
         saved = []
         logs = []
         page = object.__new__(self.module.NexcopeControlPage)
@@ -587,12 +748,24 @@ class NexcopeAutofocusTests(unittest.TestCase):
         page.load_autofocus_positions = lambda: {"x10": 100.0}
         page.save_autofocus_positions = lambda positions: saved.append(dict(positions))
         page.log_info = logs.append
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.on_autofocus_calibrate(page)
 
+        self.assertEqual(saved, [])
+        self.assertEqual(len(scheduled), 1)
+        worker, on_success, _on_error, pause_polling = scheduled[0]
+        self.assertTrue(pause_polling)
+        z_position = worker()
+        on_success(z_position)
         self.assertEqual(saved, [{"x10": 100.0, "x50": 345.5}])
+        self.assertEqual(logs, ["自动对焦 x50 已校准: Z=345.5"])
 
     def test_autofocus_go_moves_z_only_to_stored_position(self) -> None:
+        scheduled = []
         calls = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
@@ -603,11 +776,21 @@ class NexcopeAutofocusTests(unittest.TestCase):
         )
         page.autofocus_combo = types.SimpleNamespace(currentText=lambda: "x100")
         page.load_autofocus_positions = lambda: {"x100": 1125.0}
-        page.log_info = lambda msg: None
+        page.log_info = lambda msg: calls.append(("log", msg))
+        page.run_nexcope_serial_task = (
+            lambda worker, on_success=None, on_error=None, pause_polling=True:
+            scheduled.append((worker, on_success, on_error, pause_polling))
+        )
 
         self.module.NexcopeControlPage.on_autofocus_go(page)
 
-        self.assertEqual(calls, [("U", "125")])
+        self.assertEqual(calls, [])
+        self.assertEqual(len(scheduled), 1)
+        worker, on_success, _on_error, pause_polling = scheduled[0]
+        self.assertTrue(pause_polling)
+        delta_z = worker()
+        on_success(delta_z)
+        self.assertEqual(calls, [("U", "125"), ("log", "自动对焦 x100 前往完成: dZ=125")])
 
     def test_autofocus_go_requires_calibrated_selection(self) -> None:
         logs = []

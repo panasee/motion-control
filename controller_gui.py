@@ -19,7 +19,8 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import List, Optional
+from queue import Empty, Queue
+from typing import Callable, List, Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
@@ -1259,6 +1260,11 @@ class NexcopeControlPage(QWidget):
         self._home_thread: Optional[threading.Thread] = None
         self._home_error: Optional[Exception] = None
         self._home_delta: Optional[tuple[int, int]] = None
+        self._serial_io_lock = threading.Lock()
+        self._serial_task_results = Queue()
+        self._serial_task_pending_count = 0
+        self._serial_task_pause_count = 0
+        self._status_update_pending = False
         self._updating_illumination_ui = False
         self.autofocus_config_path = self.get_autofocus_config_path()
         self.record_db_path: Optional[str] = None
@@ -1287,6 +1293,66 @@ class NexcopeControlPage(QWidget):
         self.home_monitor_timer = QTimer()
         self.home_monitor_timer.timeout.connect(self.on_home_monitor_tick)
         self.home_monitor_timer.setInterval(100)
+
+        self.serial_task_timer = QTimer()
+        self.serial_task_timer.timeout.connect(self.on_serial_task_result_tick)
+        self.serial_task_timer.setInterval(25)
+
+    def run_nexcope_serial_task(
+        self,
+        worker: Callable[[], object],
+        on_success: Optional[Callable[[object], None]] = None,
+        on_error: Optional[Callable[[Exception], None]] = None,
+        pause_polling: bool = True,
+    ) -> None:
+        if pause_polling:
+            if self._serial_task_pause_count == 0:
+                self.update_timer.stop()
+                self.illumination_poll_timer.stop()
+            self._serial_task_pause_count += 1
+
+        self._serial_task_pending_count += 1
+
+        def task_runner():
+            try:
+                with self._serial_io_lock:
+                    result = worker()
+            except Exception as exc:
+                self._serial_task_results.put((False, exc, on_success, on_error, pause_polling))
+            else:
+                self._serial_task_results.put((True, result, on_success, on_error, pause_polling))
+
+        threading.Thread(target=task_runner, daemon=True).start()
+        self.serial_task_timer.start()
+
+    def on_serial_task_result_tick(self):
+        processed = False
+        while True:
+            try:
+                ok, payload, on_success, on_error, pause_polling = self._serial_task_results.get_nowait()
+            except Empty:
+                break
+
+            processed = True
+            self._serial_task_pending_count = max(0, self._serial_task_pending_count - 1)
+            if pause_polling:
+                self._serial_task_pause_count = max(0, self._serial_task_pause_count - 1)
+
+            if ok:
+                if on_success is not None:
+                    on_success(payload)
+            else:
+                if on_error is not None:
+                    on_error(payload)
+                else:
+                    self.log_info(f"Nexcope 操作失败: {payload}")
+
+        if processed and self._serial_task_pause_count == 0 and self.driver.connected:
+            self.update_timer.start()
+            self.illumination_poll_timer.start()
+
+        if self._serial_task_pending_count == 0:
+            self.serial_task_timer.stop()
 
     def init_record_db(self):
         db_fd, db_path = tempfile.mkstemp(
@@ -1689,19 +1755,27 @@ class NexcopeControlPage(QWidget):
         value_label.setText(str(value))
 
     def refresh_illumination_group(self):
-        try:
-            levels = self.driver.get_sled_levels()
-        except NotImplementedError as exc:
-            self.mark_group_unsupported(self.illumination_group)
-            self.upper_light_percent.setText("不支持")
-            self.lower_light_percent.setText("不支持")
-            self.log_info(f"照明控制 不支持: {exc}")
-            return
-        except Exception as exc:
-            self.log_info(f"照明状态 读取失败: {exc}")
+        if not self.driver.connected:
             return
 
-        self.apply_illumination_levels(levels["ULP"], levels["DLP"])
+        def on_success(levels):
+            self.apply_illumination_levels(levels["ULP"], levels["DLP"])
+
+        def on_error(exc: Exception):
+            if isinstance(exc, NotImplementedError):
+                self.mark_group_unsupported(self.illumination_group)
+                self.upper_light_percent.setText("不支持")
+                self.lower_light_percent.setText("不支持")
+                self.log_info(f"照明控制 不支持: {exc}")
+                return
+            self.log_info(f"照明状态 读取失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            self.driver.get_sled_levels,
+            on_success=on_success,
+            on_error=on_error,
+            pause_polling=False,
+        )
 
     def refresh_optical_groups(self):
         self.refresh_illumination_group()
@@ -1735,10 +1809,15 @@ class NexcopeControlPage(QWidget):
 
         upper_light = self.upper_light_slider.value()
         lower_light = self.lower_light_slider.value()
-        try:
+
+        def worker():
             self.driver.set_sled(upper_light, lower_light)
-        except Exception as exc:
-            self.log_info(f"照明写入失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_error=lambda exc: self.log_info(f"照明写入失败: {exc}"),
+            pause_polling=False,
+        )
 
     def on_illumination_slider_released(self):
         if not self.driver.connected:
@@ -1747,12 +1826,17 @@ class NexcopeControlPage(QWidget):
         self.illumination_write_timer.stop()
         upper_light = self.upper_light_slider.value()
         lower_light = self.lower_light_slider.value()
-        try:
+
+        def worker():
             self.driver.set_sled(upper_light, lower_light)
-            levels = self.driver.get_sled_levels()
-            self.apply_illumination_levels(levels["ULP"], levels["DLP"])
-        except Exception as exc:
-            self.log_info(f"照明校正失败: {exc}")
+            return self.driver.get_sled_levels()
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_success=lambda levels: self.apply_illumination_levels(levels["ULP"], levels["DLP"]),
+            on_error=lambda exc: self.log_info(f"照明校正失败: {exc}"),
+            pause_polling=False,
+        )
 
     def log_info(self, msg: str):
         import datetime
@@ -1953,15 +2037,23 @@ class NexcopeControlPage(QWidget):
             return
 
         objective = self.autofocus_combo.currentText()
-        try:
+
+        def worker():
             xyz = self.driver.get_stage_xyz()
             z_position = float(xyz["Z"])
             positions = self.load_autofocus_positions()
             positions[objective] = z_position
             self.save_autofocus_positions(positions)
+            return z_position
+
+        def on_success(z_position):
             self.log_info(f"自动对焦 {objective} 已校准: Z={z_position:g}")
-        except Exception as exc:
-            self.log_info(f"自动对焦 {objective} 校准失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_success=on_success,
+            on_error=lambda exc: self.log_info(f"自动对焦 {objective} 校准失败: {exc}"),
+        )
 
     def on_autofocus_go(self):
         if not self.driver.connected:
@@ -1974,8 +2066,9 @@ class NexcopeControlPage(QWidget):
             self.log_info(f"自动对焦 {objective} 尚未校准")
             return
 
-        try:
-            target_z = float(positions[objective])
+        target_z = float(positions[objective])
+
+        def worker():
             xyz = self.driver.get_stage_xyz()
             current_z = float(xyz["Z"])
             delta_z = target_z - current_z
@@ -1983,24 +2076,35 @@ class NexcopeControlPage(QWidget):
                 self.driver.move_up(f"{delta_z:g}")
             elif delta_z < 0:
                 self.driver.move_down(f"{abs(delta_z):g}")
+            return delta_z
+
+        def on_success(delta_z):
             self.log_info(f"自动对焦 {objective} 前往完成: dZ={delta_z:g}")
-        except Exception as exc:
-            self.log_info(f"自动对焦 {objective} 前往失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_success=on_success,
+            on_error=lambda exc: self.log_info(f"自动对焦 {objective} 前往失败: {exc}"),
+        )
 
     def on_record_position(self):
         if not self.driver.connected:
             self.log_info("未连接或无法读取 XY 位置，记录失败")
             return
 
-        try:
-            positions = self.get_xy_positions()
-        except Exception as exc:
-            self.log_info(f"读取 XY 位置失败: {exc}")
-            return
+        def worker():
+            return self.get_xy_positions()
 
-        record_id = self.save_xy_record(positions)
-        self.refresh_record_list()
-        self.log_info(f"已记录 XY 位置 #{record_id}: X={positions[0]:g}, Y={positions[1]:g}")
+        def on_success(positions):
+            record_id = self.save_xy_record(positions)
+            self.refresh_record_list()
+            self.log_info(f"已记录 XY 位置 #{record_id}: X={positions[0]:g}, Y={positions[1]:g}")
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_success=on_success,
+            on_error=lambda exc: self.log_info(f"读取 XY 位置失败: {exc}"),
+        )
 
     def on_record_item_double_clicked(self, item):
         record_id = self.get_record_item_id(item)
@@ -2013,13 +2117,20 @@ class NexcopeControlPage(QWidget):
             self.log_info(f"未找到记录 #{record_id}")
             return
 
-        try:
-            if self.move_to_recorded_xy_position(targets):
+        def worker():
+            return self.move_to_recorded_xy_position(targets)
+
+        def on_success(moved):
+            if moved:
                 self.log_info(f"跳转到 XY 记录 #{record_id}: X={targets[0]:g}, Y={targets[1]:g}")
             else:
                 self.log_info("未连接，无法执行 XY 跳转")
-        except Exception as exc:
-            self.log_info(f"XY 跳转失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            worker,
+            on_success=on_success,
+            on_error=lambda exc: self.log_info(f"XY 跳转失败: {exc}"),
+        )
 
     def on_rename_record(self):
         current_item = self.record_list.currentItem()
@@ -2059,15 +2170,29 @@ class NexcopeControlPage(QWidget):
         if not self.driver.connected:
             return
 
-        try:
-            xyz = self.driver.get_stage_xyz()
+        if self._status_update_pending:
+            return
+
+        self._status_update_pending = True
+
+        def on_success(xyz):
+            self._status_update_pending = False
             self.axis_pos = [float(xyz[axis]) for axis in self.AXIS_NAMES]
             for label, axis in zip(self.pos_labels, self.AXIS_NAMES):
                 label.setText(f"{xyz[axis]}")
-        except Exception as exc:
+
+        def on_error(exc: Exception):
+            self._status_update_pending = False
             if self.is_transient_status_response_error(exc):
                 return
             self.log_info(f"状态刷新失败: {exc}")
+
+        self.run_nexcope_serial_task(
+            self.driver.get_stage_xyz,
+            on_success=on_success,
+            on_error=on_error,
+            pause_polling=False,
+        )
 
     def shutdown(self):
         self.on_axis_jog_stop()
@@ -2075,6 +2200,7 @@ class NexcopeControlPage(QWidget):
         self.illumination_poll_timer.stop()
         self.illumination_write_timer.stop()
         self.home_monitor_timer.stop()
+        self.serial_task_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
         self.cleanup_record_db()
