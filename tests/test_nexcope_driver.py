@@ -243,6 +243,24 @@ class NexcopeDriverSerialShapeTest(unittest.TestCase):
         )
         self.assertEqual(fake_serial.written, [b"INFRD\r"])
 
+    def test_get_stage_xyz_skips_stale_jog_acks_before_info_response(self) -> None:
+        from nexcope_driver import NexcopeDriver
+
+        fake_serial = FakeSerial(
+            responses=[
+                b"F\r",
+                b"R\r",
+                b"X:7487027, Y:7234386, Z:1508367\r",
+            ]
+        )
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
+        response = driver.get_stage_xyz()
+
+        self.assertEqual(response, {"X": 7487027, "Y": 7234386, "Z": 1508367})
+        self.assertEqual(fake_serial.written, [b"INFRD\r"])
+
     def test_get_upper_light_path_uses_optical_info_wrapper(self) -> None:
         from nexcope_driver import NexcopeDriver
 
@@ -378,6 +396,18 @@ class NexcopeDriverSerialShapeTest(unittest.TestCase):
 
         self.assertEqual(levels, {"ULP": 500, "DLP": 250})
         self.assertEqual(fake_serial.written, [b"SLED 500 250\r", b"SLED\r"])
+
+    def test_get_sled_levels_skips_stale_jog_ack_before_illumination_response(self) -> None:
+        from nexcope_driver import NexcopeDriver
+
+        fake_serial = FakeSerial(responses=[b"L\r", b"ULP:500, DLP:250\r"])
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
+        levels = driver.get_sled_levels()
+
+        self.assertEqual(levels, {"ULP": 500, "DLP": 250})
+        self.assertEqual(fake_serial.written, [b"SLED\r"])
 
 
 if __name__ == "__main__":

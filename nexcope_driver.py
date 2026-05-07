@@ -17,6 +17,7 @@ DEFAULT_TERMINATOR = "\r"
 STAGE_XYZ_COMMAND = "INFRD"
 OPTICAL_INFO_COMMAND = "INFRJ"
 UNSUPPORTED_ERROR_CODES = {-3}
+MOVEMENT_ACK_LINES = {"L", "R", "F", "B", "U", "D"}
 
 
 def format_command(command: str, terminator: str = DEFAULT_TERMINATOR) -> bytes:
@@ -152,8 +153,11 @@ class NexcopeDriver:
         self.send_command(command)
         return self.receive_line()
 
-    def query_supported_line(self, command: str) -> str:
-        response = self.query_line(command)
+    def query_supported_line(self, command: str, *, skip_stale_movement_acks: bool = False) -> str:
+        self.send_command(command)
+        response = self.receive_line()
+        while skip_stale_movement_acks and response.strip().upper() in MOVEMENT_ACK_LINES:
+            response = self.receive_line()
         if is_unsupported_response(response):
             error = parse_error_response(response)
             code = int(error["code"])
@@ -163,19 +167,30 @@ class NexcopeDriver:
         return response
 
     def query_info_fields(self, command: str) -> dict[str, str]:
-        return parse_info_response(self.query_supported_line(command))
+        return parse_info_response(self.query_supported_line(command, skip_stale_movement_acks=True))
 
     def get_stage_xyz(self) -> dict[str, int]:
-        return parse_xyz_response(self.query_supported_line(STAGE_XYZ_COMMAND))
+        return parse_xyz_response(
+            self.query_supported_line(STAGE_XYZ_COMMAND, skip_stale_movement_acks=True)
+        )
 
     def get_px(self) -> int:
-        return parse_axis_position_response(self.query_supported_line("PX"), "X")
+        return parse_axis_position_response(
+            self.query_supported_line("PX", skip_stale_movement_acks=True),
+            "X",
+        )
 
     def get_py(self) -> int:
-        return parse_axis_position_response(self.query_supported_line("PY"), "Y")
+        return parse_axis_position_response(
+            self.query_supported_line("PY", skip_stale_movement_acks=True),
+            "Y",
+        )
 
     def get_pz(self) -> int:
-        return parse_axis_position_response(self.query_supported_line("PZ"), "Z")
+        return parse_axis_position_response(
+            self.query_supported_line("PZ", skip_stale_movement_acks=True),
+            "Z",
+        )
 
     def get_optical_info(self) -> dict[str, str]:
         return self.query_info_fields(OPTICAL_INFO_COMMAND)
@@ -214,7 +229,7 @@ class NexcopeDriver:
         self.query_supported_line(f"D {payload}")
 
     def get_sled(self) -> str:
-        return self.query_supported_line("SLED")
+        return self.query_supported_line("SLED", skip_stale_movement_acks=True)
 
     def get_sled_levels(self) -> dict[str, int]:
         return parse_sled_response(self.get_sled())

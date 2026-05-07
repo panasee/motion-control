@@ -1505,9 +1505,9 @@ class NexcopeControlPage(QWidget):
         return group
 
     def create_manual_control(self) -> QGroupBox:
-        group = QGroupBox("手动控制")
+        group = QGroupBox("控制")
         layout = QGridLayout(group)
-        layout.setHorizontalSpacing(10)
+        layout.setHorizontalSpacing(9)
         layout.setVerticalSpacing(8)
         layout.setColumnStretch(0, 2)
         for column in range(1, 5):
@@ -1520,20 +1520,20 @@ class NexcopeControlPage(QWidget):
         self.manual_speed.setDecimals(3)
         self.manual_speed.setSingleStep(0.001)
         speed_label = QLabel("速度(mm/s):")
-        speed_label.setMinimumWidth(110)
-        speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        speed_label.setMinimumWidth(100)
+        speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(speed_label, 0, 1)
-        layout.addWidget(self.manual_speed, 0, 2, 1, 3)
+        layout.addWidget(self.manual_speed, 0, 3, 1, 2)
 
         for row, axis in enumerate(self.AXIS_NAMES, start=1):
             btn_neg = QPushButton(f"{axis}-")
-            btn_neg.setMinimumSize(120, 44)
+            btn_neg.setMinimumSize(100, 44)
             btn_neg.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, -1))
             btn_neg.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
             layout.addWidget(btn_neg, row, 1, 1, 2)
 
             btn_pos = QPushButton(f"{axis}+")
-            btn_pos.setMinimumSize(120, 44)
+            btn_pos.setMinimumSize(100, 44)
             btn_pos.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, 1))
             btn_pos.released.connect(lambda a=axis: self.on_axis_jog_stop(a))
             layout.addWidget(btn_pos, row, 3, 1, 2)
@@ -1543,7 +1543,7 @@ class NexcopeControlPage(QWidget):
         layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 1, 1, 4)
 
         autofocus_row = len(self.AXIS_NAMES) + 2
-        layout.addWidget(QLabel("自动对焦"), autofocus_row, 1)
+        layout.addWidget(QLabel("对焦"), autofocus_row, 1)
         self.autofocus_combo = QComboBox()
         self.autofocus_combo.addItems(["x10", "x50", "x100"])
         layout.addWidget(self.autofocus_combo, autofocus_row, 2)
@@ -1779,16 +1779,16 @@ class NexcopeControlPage(QWidget):
             return False
 
         payload = f"{self.compute_jog_step_counts()}"
-        handlers = {
-            ("X", -1): self.driver.move_left,
-            ("X", 1): self.driver.move_right,
-            ("Y", -1): self.driver.move_back,
-            ("Y", 1): self.driver.move_forward,
-            ("Z", -1): self.driver.move_down,
-            ("Z", 1): self.driver.move_up,
+        commands = {
+            ("X", -1): "L",
+            ("X", 1): "R",
+            ("Y", -1): "B",
+            ("Y", 1): "F",
+            ("Z", -1): "D",
+            ("Z", 1): "U",
         }
-        handler = handlers[(self.active_jog_axis, self.active_jog_direction)]
-        handler(payload)
+        command = commands[(self.active_jog_axis, self.active_jog_direction)]
+        self.driver.send_command(f"{command} {payload}")
         return True
 
     def on_axis_jog_start(self, axis: str, direction: int):

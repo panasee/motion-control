@@ -160,15 +160,15 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertIn('QLabel("速度(mm/s):")', source)
         self.assertIn("self.manual_speed.setRange(0.001, 10)", source)
         self.assertIn("self.manual_speed.setValue(1.0)", source)
-        self.assertIn("speed_label.setMinimumWidth(110)", source)
+        self.assertIn("speed_label.setMinimumWidth(100)", source)
         self.assertIn("layout.setColumnStretch(0, 2)", source)
         self.assertIn("for column in range(1, 5):", source)
         self.assertIn("layout.setColumnStretch(column, 9)", source)
         self.assertIn("layout.setColumnStretch(5, 2)", source)
         self.assertIn("JOG_INTERVAL_MS = 15", source)
         self.assertNotIn("self.manual_step = QDoubleSpinBox()", source)
-        self.assertIn("btn_neg.setMinimumSize(120, 44)", source)
-        self.assertIn("btn_pos.setMinimumSize(120, 44)", source)
+        self.assertIn("btn_neg.setMinimumSize(100, 44)", source)
+        self.assertIn("btn_pos.setMinimumSize(100, 44)", source)
         self.assertIn("layout.addWidget(btn_neg, row, 1, 1, 2)", source)
         self.assertIn("layout.addWidget(btn_pos, row, 3, 1, 2)", source)
         self.assertIn(".pressed.connect(", source)
@@ -195,7 +195,7 @@ class NexcopePageStructureTests(unittest.TestCase):
     def test_nexcope_manual_control_declares_autofocus_controls(self) -> None:
         source = SOURCE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('QLabel("自动对焦")', source)
+        self.assertIn('QLabel("对焦")', source)
         self.assertIn("self.autofocus_combo = QComboBox()", source)
         self.assertIn('self.autofocus_combo.addItems(["x10", "x50", "x100"])', source)
         self.assertIn('QPushButton("校准")', source)
@@ -334,26 +334,22 @@ class NexcopeJogTests(unittest.TestCase):
         self.assertEqual(page.active_jog_direction, -1)
         self.assertEqual(events, ["pause_status", "tick", "start"])
 
-    def test_on_jog_tick_routes_to_axis_specific_relative_command(self) -> None:
+    def test_send_jog_step_writes_nonblocking_command_without_ack_read(self) -> None:
         calls = []
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(
             connected=True,
-            move_left=lambda payload: calls.append(("L", payload)),
-            move_right=lambda payload: calls.append(("R", payload)),
-            move_forward=lambda payload: calls.append(("F", payload)),
-            move_back=lambda payload: calls.append(("B", payload)),
-            move_up=lambda payload: calls.append(("U", payload)),
-            move_down=lambda payload: calls.append(("D", payload)),
+            send_command=lambda command: calls.append(command),
         )
         page.log_info = lambda msg: None
         page.compute_jog_step_counts = lambda: 25
         page.active_jog_axis = "Y"
         page.active_jog_direction = 1
 
-        self.module.NexcopeControlPage.on_jog_tick(page)
+        sent = self.module.NexcopeControlPage._send_jog_step(page)
 
-        self.assertEqual(calls, [("F", "25")])
+        self.assertTrue(sent)
+        self.assertEqual(calls, ["F 25"])
 
     def test_on_axis_jog_stop_clears_active_jog_and_stops_timer(self) -> None:
         events = []
