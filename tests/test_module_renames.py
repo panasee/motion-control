@@ -30,6 +30,7 @@ def _install_pyqt6_stubs() -> None:
         "QTextEdit",
         "QTabWidget",
         "QStatusBar",
+        "QAbstractSpinBox",
         "QDoubleSpinBox",
         "QSlider",
         "QFrame",
@@ -47,7 +48,7 @@ def _install_pyqt6_stubs() -> None:
     qtcore.QRectF = _stub_type("QRectF")
 
     qtgui = types.ModuleType("PyQt6.QtGui")
-    for name in ("QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush"):
+    for name in ("QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush", "QIcon"):
         setattr(qtgui, name, _stub_type(name))
 
     pyqt6 = types.ModuleType("PyQt6")

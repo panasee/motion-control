@@ -65,6 +65,7 @@ def _load_controller_module():
         "QTextEdit",
         "QTabWidget",
         "QStatusBar",
+        "QAbstractSpinBox",
         "QDoubleSpinBox",
         "QSlider",
         "QFrame",
@@ -82,7 +83,7 @@ def _load_controller_module():
     dummy_core.QTimer = _Dummy
     dummy_core.QRectF = _DummyQRectF
 
-    for name in ["QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush"]:
+    for name in ["QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush", "QIcon"]:
         setattr(dummy_gui, name, _Dummy)
 
     pyqt6 = types.ModuleType("PyQt6")
@@ -158,8 +159,8 @@ class NexcopePageStructureTests(unittest.TestCase):
 
         self.assertIn("self.manual_speed = QDoubleSpinBox()", source)
         self.assertIn('QLabel("速度(mm/s):")', source)
-        self.assertIn("self.manual_speed.setRange(0.001, 10)", source)
-        self.assertIn("self.manual_speed.setValue(1.0)", source)
+        self.assertIn("configure_speed_spinbox(self.manual_speed, minimum=0.001, maximum=10, default=1.0)", source)
+        self.assertIn("self.manual_speed_preset = create_speed_preset_combo(self.manual_speed)", source)
         self.assertIn("speed_label.setMinimumWidth(100)", source)
         self.assertIn("layout.setColumnStretch(0, 2)", source)
         self.assertIn("for column in range(1, 5):", source)
@@ -243,6 +244,25 @@ class NexcopePageRecordDbTests(unittest.TestCase):
 
         self.assertEqual(messages, ["未连接或无法读取 XY 位置，记录失败"])
 
+    def test_move_to_recorded_xy_position_uses_relative_delta_commands(self) -> None:
+        calls = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            get_stage_xyz=lambda: {"X": 900, "Y": 2300, "Z": 10},
+            move_left=lambda payload: calls.append(("L", payload)),
+            move_right=lambda payload: calls.append(("R", payload)),
+            move_forward=lambda payload: calls.append(("F", payload)),
+            move_back=lambda payload: calls.append(("B", payload)),
+            move_gpx=lambda payload: self.fail("absolute GPX command should not be used"),
+            move_gpy=lambda payload: self.fail("absolute GPY command should not be used"),
+        )
+
+        moved = self.module.NexcopeControlPage.move_to_recorded_xy_position(page, [1000.0, 2000.0])
+
+        self.assertTrue(moved)
+        self.assertEqual(calls, [("R", "100"), ("B", "300")])
+
     def test_mark_group_unsupported_disables_group_and_sets_tooltip(self) -> None:
         page = object.__new__(self.module.NexcopeControlPage)
 
@@ -323,6 +343,7 @@ class NexcopeJogTests(unittest.TestCase):
         page.log_info = lambda msg: None
         page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
         page.compute_jog_step_counts = lambda: 50
+        page._jog_error_count = 2
         events = []
         page._send_jog_step = lambda: (events.append("tick") or True)
         page.jog_timer = types.SimpleNamespace(start=lambda: events.append("start"))
@@ -332,6 +353,7 @@ class NexcopeJogTests(unittest.TestCase):
 
         self.assertEqual(page.active_jog_axis, "X")
         self.assertEqual(page.active_jog_direction, -1)
+        self.assertEqual(page._jog_error_count, 0)
         self.assertEqual(events, ["pause_status", "tick", "start"])
 
     def test_send_jog_step_writes_nonblocking_command_without_ack_read(self) -> None:
@@ -359,12 +381,74 @@ class NexcopeJogTests(unittest.TestCase):
         page.driver = types.SimpleNamespace(connected=True)
         page.active_jog_axis = "Z"
         page.active_jog_direction = -1
+        page._jog_error_count = 2
 
         self.module.NexcopeControlPage.on_axis_jog_stop(page, "Z")
 
         self.assertIsNone(page.active_jog_axis)
         self.assertEqual(page.active_jog_direction, 0)
+        self.assertEqual(page._jog_error_count, 0)
         self.assertEqual(events, ["stop", "resume_status"])
+
+    def test_on_jog_tick_keeps_running_after_transient_send_failure(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.JOG_MAX_CONSECUTIVE_ERRORS = 3
+        page.active_jog_axis = "X"
+        page.active_jog_direction = 1
+        page._jog_error_count = 0
+        page._send_jog_step = lambda: (_ for _ in ()).throw(RuntimeError("serial busy"))
+        page.on_axis_jog_stop = lambda: events.append("stop")
+        page.log_info = lambda msg: events.append(("log", msg))
+
+        self.module.NexcopeControlPage.on_jog_tick(page)
+
+        self.assertEqual(page._jog_error_count, 1)
+        self.assertNotIn("stop", events)
+        self.assertEqual(events, [("log", "X 轴Jog发送失败，继续尝试: serial busy")])
+
+    def test_on_jog_tick_stops_after_repeated_send_failures(self) -> None:
+        events = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.JOG_MAX_CONSECUTIVE_ERRORS = 3
+        page.active_jog_axis = "Y"
+        page.active_jog_direction = -1
+        page._jog_error_count = 2
+        page._send_jog_step = lambda: (_ for _ in ()).throw(RuntimeError("serial busy"))
+        page.on_axis_jog_stop = lambda: events.append("stop")
+        page.log_info = lambda msg: events.append(("log", msg))
+
+        self.module.NexcopeControlPage.on_jog_tick(page)
+
+        self.assertEqual(events, ["stop", ("log", "Y 轴Jog连续失败并已停止: serial busy")])
+
+    def test_update_status_suppresses_transient_missing_xyz_response(self) -> None:
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            get_stage_xyz=lambda: (_ for _ in ()).throw(ValueError("missing XYZ field: X")),
+        )
+        page.log_info = logs.append
+        page.AXIS_NAMES = ["X", "Y", "Z"]
+        page.pos_labels = []
+
+        self.module.NexcopeControlPage.update_status(page)
+
+        self.assertEqual(logs, [])
+
+    def test_update_status_logs_non_transient_status_errors(self) -> None:
+        logs = []
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.driver = types.SimpleNamespace(
+            connected=True,
+            get_stage_xyz=lambda: (_ for _ in ()).throw(RuntimeError("serial offline")),
+        )
+        page.log_info = logs.append
+
+        self.module.NexcopeControlPage.update_status(page)
+
+        self.assertEqual(logs, ["状态刷新失败: serial offline"])
 
     def test_send_move_to_center_commands_uses_relative_xy_delta_to_fixed_center(self) -> None:
         calls = []

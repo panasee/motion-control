@@ -24,16 +24,49 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QPushButton, QLabel, QLineEdit,
     QComboBox, QCheckBox, QTextEdit, QTabWidget,
-    QStatusBar, QDoubleSpinBox, QFrame, QSlider,
+    QStatusBar, QAbstractSpinBox, QDoubleSpinBox, QFrame, QSlider,
     QMessageBox, QMenuBar, QListWidget, QListWidgetItem, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush
+from PyQt6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QIcon
 from PyQt6.QtCore import QRectF
 
 # 生产环境：必须导入真正的驱动
 from onway_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
 from nexcope_driver import NexcopeDriver, SERIAL_AVAILABLE as NEXCOPE_SERIAL_AVAILABLE
+
+
+SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
+APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
+
+
+def bundled_resource_path(relative_path: Path) -> str:
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return str(base_dir / relative_path)
+
+
+def create_app_icon() -> QIcon:
+    return QIcon(bundled_resource_path(APP_ICON_RELATIVE_PATH))
+
+
+def configure_speed_spinbox(spinbox: QDoubleSpinBox, *, minimum: float, maximum: float, default: float) -> None:
+    spinbox.setRange(minimum, maximum)
+    spinbox.setValue(default)
+    spinbox.setDecimals(3)
+    spinbox.setSingleStep(0.001)
+    spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+
+
+def apply_speed_preset(spinbox: QDoubleSpinBox, text: str) -> None:
+    spinbox.setValue(float(text))
+
+
+def create_speed_preset_combo(spinbox: QDoubleSpinBox) -> QComboBox:
+    combo = QComboBox()
+    combo.addItems(SPEED_PRESET_LABELS)
+    combo.setCurrentText(f"{spinbox.value():g}")
+    combo.currentTextChanged.connect(lambda text: apply_speed_preset(spinbox, text))
+    return combo
 
 
 class PositionPlot(QWidget):
@@ -745,11 +778,13 @@ class MCCMainWindow(QMainWindow):
         # 速度控制
         layout.addWidget(QLabel("手动速度:"), 7, 0)
         self.manual_spd = QDoubleSpinBox()
-        self.manual_spd.setRange(0.001, 1000)
-        self.manual_spd.setValue(1.0)
-        self.manual_spd.setDecimals(3)
-        self.manual_spd.setSingleStep(0.001)
-        layout.addWidget(self.manual_spd, 7, 1)
+        configure_speed_spinbox(self.manual_spd, minimum=0.001, maximum=1000, default=1.0)
+        self.manual_spd_preset = create_speed_preset_combo(self.manual_spd)
+        speed_input_layout = QHBoxLayout()
+        speed_input_layout.setContentsMargins(0, 0, 0, 0)
+        speed_input_layout.addWidget(self.manual_spd)
+        speed_input_layout.addWidget(self.manual_spd_preset)
+        layout.addLayout(speed_input_layout, 7, 1)
         
         # 急停和停止
         btn_em_stop = QPushButton("急停")
@@ -1211,6 +1246,7 @@ class NexcopeControlPage(QWidget):
     AUTOFOCUS_CONFIG_FILENAME = "nexcope_autofocus.json"
     COUNTS_PER_UM = 100
     JOG_INTERVAL_MS = 15
+    JOG_MAX_CONSECUTIVE_ERRORS = 3
 
     def __init__(self):
         super().__init__()
@@ -1218,6 +1254,7 @@ class NexcopeControlPage(QWidget):
         self.axis_pos = [0.0] * len(self.AXIS_NAMES)
         self.active_jog_axis: Optional[str] = None
         self.active_jog_direction = 0
+        self._jog_error_count = 0
         self._home_in_progress = False
         self._home_thread: Optional[threading.Thread] = None
         self._home_error: Optional[Exception] = None
@@ -1405,8 +1442,19 @@ class NexcopeControlPage(QWidget):
         if not self.driver.connected:
             return False
 
-        self.driver.move_gpx(f"{targets[0]:g}")
-        self.driver.move_gpy(f"{targets[1]:g}")
+        xyz = self.driver.get_stage_xyz()
+        delta_x = int(round(float(targets[0]) - float(xyz["X"])))
+        delta_y = int(round(float(targets[1]) - float(xyz["Y"])))
+
+        if delta_x < 0:
+            self.driver.move_left(f"{abs(delta_x)}")
+        elif delta_x > 0:
+            self.driver.move_right(f"{delta_x}")
+
+        if delta_y < 0:
+            self.driver.move_back(f"{abs(delta_y)}")
+        elif delta_y > 0:
+            self.driver.move_forward(f"{delta_y}")
         return True
 
     def init_ui(self):
@@ -1515,15 +1563,17 @@ class NexcopeControlPage(QWidget):
         layout.setColumnStretch(5, 2)
 
         self.manual_speed = QDoubleSpinBox()
-        self.manual_speed.setRange(0.001, 10)
-        self.manual_speed.setValue(1.0)
-        self.manual_speed.setDecimals(3)
-        self.manual_speed.setSingleStep(0.001)
+        configure_speed_spinbox(self.manual_speed, minimum=0.001, maximum=10, default=1.0)
+        self.manual_speed_preset = create_speed_preset_combo(self.manual_speed)
         speed_label = QLabel("速度(mm/s):")
         speed_label.setMinimumWidth(100)
         speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        speed_input_layout = QHBoxLayout()
+        speed_input_layout.setContentsMargins(0, 0, 0, 0)
+        speed_input_layout.addWidget(self.manual_speed)
+        speed_input_layout.addWidget(self.manual_speed_preset)
         layout.addWidget(speed_label, 0, 1)
-        layout.addWidget(self.manual_speed, 0, 3, 1, 2)
+        layout.addLayout(speed_input_layout, 0, 3, 1, 2)
 
         for row, axis in enumerate(self.AXIS_NAMES, start=1):
             btn_neg = QPushButton(f"{axis}-")
@@ -1789,6 +1839,7 @@ class NexcopeControlPage(QWidget):
         }
         command = commands[(self.active_jog_axis, self.active_jog_direction)]
         self.driver.send_command(f"{command} {payload}")
+        self._jog_error_count = 0
         return True
 
     def on_axis_jog_start(self, axis: str, direction: int):
@@ -1798,6 +1849,7 @@ class NexcopeControlPage(QWidget):
 
         self.active_jog_axis = axis
         self.active_jog_direction = direction
+        self._jog_error_count = 0
         self.update_timer.stop()
         try:
             if self._send_jog_step():
@@ -1816,8 +1868,12 @@ class NexcopeControlPage(QWidget):
             self._send_jog_step()
         except Exception as exc:
             axis = self.active_jog_axis or "?"
-            self.on_axis_jog_stop()
-            self.log_info(f"{axis} 轴Jog失败并已停止: {exc}")
+            self._jog_error_count += 1
+            if self._jog_error_count >= self.JOG_MAX_CONSECUTIVE_ERRORS:
+                self.on_axis_jog_stop()
+                self.log_info(f"{axis} 轴Jog连续失败并已停止: {exc}")
+            else:
+                self.log_info(f"{axis} 轴Jog发送失败，继续尝试: {exc}")
 
     def on_axis_jog_stop(self, axis: Optional[str] = None):
         if axis is not None and axis != self.active_jog_axis:
@@ -1826,6 +1882,7 @@ class NexcopeControlPage(QWidget):
         self.jog_timer.stop()
         self.active_jog_axis = None
         self.active_jog_direction = 0
+        self._jog_error_count = 0
         if self.driver.connected:
             self.update_timer.start()
 
@@ -1989,6 +2046,15 @@ class NexcopeControlPage(QWidget):
         self.refresh_record_list()
         self.log_info("已清空 Nexcope XY 位置记录")
 
+    @staticmethod
+    def is_transient_status_response_error(exc: Exception) -> bool:
+        message = str(exc)
+        return isinstance(exc, ValueError) and (
+            "missing XYZ field:" in message
+            or "response does not contain key:value fields" in message
+            or "response is empty" in message
+        )
+
     def update_status(self):
         if not self.driver.connected:
             return
@@ -1999,6 +2065,8 @@ class NexcopeControlPage(QWidget):
             for label, axis in zip(self.pos_labels, self.AXIS_NAMES):
                 label.setText(f"{xyz[axis]}")
         except Exception as exc:
+            if self.is_transient_status_response_error(exc):
+                return
             self.log_info(f"状态刷新失败: {exc}")
 
     def shutdown(self):
@@ -2107,6 +2175,7 @@ class ControllerMainWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Motion Controller Shell")
+        self.setWindowIcon(create_app_icon())
         self.resize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
         self.setMinimumSize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
 
@@ -2158,6 +2227,7 @@ class ControllerMainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setWindowIcon(create_app_icon())
     
     # 设置样式
     app.setStyle("Fusion")

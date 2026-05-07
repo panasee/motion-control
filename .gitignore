@@ -3,6 +3,8 @@ __pycache__/
 .codex
 .superpowers/
 .worktrees/
+docs/
+release/
 
 # Local notes and capture artifacts
 analysis.md

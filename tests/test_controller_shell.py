@@ -67,6 +67,7 @@ def _load_controller_module():
         "QTextEdit",
         "QTabWidget",
         "QStatusBar",
+        "QAbstractSpinBox",
         "QDoubleSpinBox",
         "QSlider",
         "QFrame",
@@ -84,7 +85,7 @@ def _load_controller_module():
     dummy_core.QTimer = _Dummy
     dummy_core.QRectF = _DummyQRectF
 
-    for name in ["QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush"]:
+    for name in ["QFont", "QColor", "QPalette", "QPainter", "QPen", "QBrush", "QIcon"]:
         setattr(dummy_gui, name, _Dummy)
 
     pyqt6 = types.ModuleType("PyQt6")
@@ -202,6 +203,38 @@ class ControllerShellStructureTest(unittest.TestCase):
         self.assertIn("NEXCOPE_WINDOW_WIDTH", source)
         self.assertIn("NEXCOPE_WINDOW_HEIGHT", source)
         self.assertIn("apply_window_mode", source)
+
+    def test_application_icon_is_loaded_from_bundled_assets(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"', source)
+        self.assertIn('getattr(sys, "_MEIPASS"', source)
+        self.assertIn("def create_app_icon() -> QIcon:", source)
+        self.assertIn("self.setWindowIcon(create_app_icon())", source)
+        self.assertIn("app.setWindowIcon(create_app_icon())", source)
+
+
+class SpeedPresetStructureTest(unittest.TestCase):
+    def test_speed_presets_are_shared_and_apply_to_spinbox(self) -> None:
+        module = _load_controller_module()
+        values = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
+        applied = []
+        fake_spinbox = types.SimpleNamespace(setValue=lambda value: applied.append(value))
+
+        self.assertEqual(module.SPEED_PRESET_LABELS, values)
+
+        module.apply_speed_preset(fake_spinbox, "0.05")
+
+        self.assertEqual(applied, [0.05])
+
+    def test_onway_and_nexcope_speed_controls_use_preset_combo_without_spin_arrows(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("QAbstractSpinBox.ButtonSymbols.NoButtons", source)
+        self.assertIn("configure_speed_spinbox(self.manual_spd", source)
+        self.assertIn("configure_speed_spinbox(self.manual_speed", source)
+        self.assertIn("self.manual_spd_preset = create_speed_preset_combo(self.manual_spd)", source)
+        self.assertIn("self.manual_speed_preset = create_speed_preset_combo(self.manual_speed)", source)
 
 
 class ControllerShellConnectionHandoffTest(unittest.TestCase):
