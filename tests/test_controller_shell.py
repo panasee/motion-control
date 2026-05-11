@@ -213,6 +213,28 @@ class ControllerShellStructureTest(unittest.TestCase):
         self.assertIn("self.setWindowIcon(create_app_icon())", source)
         self.assertIn("app.setWindowIcon(create_app_icon())", source)
 
+    def test_onway_publishes_a_b_axes_as_external_x_y(self) -> None:
+        module = _load_controller_module()
+        page = object.__new__(module.MCCMainWindow)
+        published = []
+        page.position_state = types.SimpleNamespace(update_xy=lambda x, y: published.append((x, y)))
+
+        module.MCCMainWindow.publish_position_state(page, [0, 1, 2, 33.3, 44.4, 55.5])
+
+        self.assertEqual(published, [(33.3, 44.4)])
+        self.assertEqual(module.MCCMainWindow.ABC_AXIS_INDICES[:2], (3, 4))
+
+    def test_nexcope_publishes_x_y_axes_as_external_x_y(self) -> None:
+        module = _load_controller_module()
+        page = object.__new__(module.NexcopeControlPage)
+        published = []
+        page.position_state = types.SimpleNamespace(update_xy=lambda x, y: published.append((x, y)))
+
+        module.NexcopeControlPage.publish_position_state(page, [11.1, 22.2, 33.3])
+
+        self.assertEqual(published, [(11.1, 22.2)])
+        self.assertEqual(module.NexcopeControlPage.XY_AXIS_INDICES, (0, 1))
+
 
 class SpeedPresetStructureTest(unittest.TestCase):
     def test_speed_presets_are_shared_and_apply_to_spinbox(self) -> None:

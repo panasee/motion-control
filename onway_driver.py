@@ -1573,7 +1573,10 @@ class MCCDriver:
         for i in range(min(6, len(accels))):
             struct.pack_into('<f', data, 52 + i * 4, accels[i])
         
-        resp = self._send_command(CMMND.GCODECMND, bytes(data), expected_values=1)
+        # GCODECMND may acknowledge a started move without returning a value.
+        # Let the response header's u8Len decide how much payload to read; forcing
+        # one return value causes valid zero-value ACKs to be treated as timeouts.
+        resp = self._send_command(CMMND.GCODECMND, bytes(data))
         return resp is not None and resp.status == 0
     
     # ========== 电子齿轮 ==========

@@ -35,6 +35,7 @@ from PyQt6.QtCore import QRectF
 # 生产环境：必须导入真正的驱动
 from onway_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
 from nexcope_driver import NexcopeDriver, SERIAL_AVAILABLE as NEXCOPE_SERIAL_AVAILABLE
+from position_server import PositionHttpServer, PositionState
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
@@ -304,8 +305,9 @@ class MCCMainWindow(QMainWindow):
     DEFAULT_WINDOW_WIDTH = 960
     DEFAULT_WINDOW_HEIGHT = 720
 
-    def __init__(self):
+    def __init__(self, position_state: Optional[PositionState] = None):
         super().__init__()
+        self.position_state = position_state or PositionState()
 
         # 日志回调函数 (在 info_text 创建后使用)
         def log_callback(level: str, msg: str):
@@ -390,7 +392,15 @@ class MCCMainWindow(QMainWindow):
             return None
 
         self.axis_pos = list(positions)
+        self.publish_position_state(self.axis_pos)
         return [self.axis_pos[index] for index in self.ABC_AXIS_INDICES]
+
+    def publish_position_state(self, positions: List[float]) -> None:
+        """Publish external X/Y from internal Onway A/B axes."""
+        axis_a_index, axis_b_index = self.ABC_AXIS_INDICES[:2]
+        if len(positions) <= max(axis_a_index, axis_b_index):
+            return
+        self.position_state.update_xy(positions[axis_a_index], positions[axis_b_index])
 
     def save_abc_record(self, positions: List[float]) -> int:
         """保存一条 A/B/C 位置记录并返回记录序号。"""
@@ -922,6 +932,7 @@ class MCCMainWindow(QMainWindow):
         """断开连接"""
         self.update_timer.stop()
         self.driver.disconnect()
+        self.position_state.mark_disconnected()
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
         self.conn_indicator.setStyleSheet("background-color: gray; border-radius: 10px;")
@@ -953,6 +964,7 @@ class MCCMainWindow(QMainWindow):
         """串口断开"""
         self.update_timer.stop()
         self.driver.disconnect()
+        self.position_state.mark_disconnected()
         self.conn_indicator.setStyleSheet("background-color: gray; border-radius: 10px;")
         self.status_label.setText("未连接")
         self.log_info("串口已断开")
@@ -1210,6 +1222,7 @@ class MCCMainWindow(QMainWindow):
             pos = self.driver.get_axis_pos(0xFF)
             if pos:
                 self.axis_pos = list(pos)
+                self.publish_position_state(self.axis_pos)
                 for i in range(6):
                     self.pos_labels[i].setText(f"{pos[i]:.3f}")
                 self.refresh_plot_state()
@@ -1229,6 +1242,7 @@ class MCCMainWindow(QMainWindow):
         self.update_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
+        self.position_state.mark_disconnected()
         self.cleanup_record_db()
         event.accept()
 
@@ -1249,8 +1263,9 @@ class NexcopeControlPage(QWidget):
     JOG_INTERVAL_MS = 15
     JOG_MAX_CONSECUTIVE_ERRORS = 3
 
-    def __init__(self):
+    def __init__(self, position_state: Optional[PositionState] = None):
         super().__init__()
+        self.position_state = position_state or PositionState()
         self.driver = NexcopeDriver()
         self.axis_pos = [0.0] * len(self.AXIS_NAMES)
         self.active_jog_axis: Optional[str] = None
@@ -1398,7 +1413,14 @@ class NexcopeControlPage(QWidget):
             xyz = self.driver.get_stage_xyz()
             positions = [float(xyz[axis]) for axis in self.AXIS_NAMES]
             self.axis_pos = positions
+            self.publish_position_state(positions)
         return [positions[index] for index in self.XY_AXIS_INDICES]
+
+    def publish_position_state(self, positions: List[float]) -> None:
+        axis_x_index, axis_y_index = self.XY_AXIS_INDICES
+        if len(positions) <= max(axis_x_index, axis_y_index):
+            return
+        self.position_state.update_xy(positions[axis_x_index], positions[axis_y_index])
 
     def save_xy_record(self, positions: List[float]) -> int:
         if self.record_db_conn is None:
@@ -1897,6 +1919,7 @@ class NexcopeControlPage(QWidget):
         try:
             self.driver.disconnect()
         finally:
+            self.position_state.mark_disconnected()
             self._set_connection_state(False, "未连接")
             self.log_info("已断开 Nexcope 串口")
 
@@ -2178,6 +2201,7 @@ class NexcopeControlPage(QWidget):
         def on_success(xyz):
             self._status_update_pending = False
             self.axis_pos = [float(xyz[axis]) for axis in self.AXIS_NAMES]
+            self.publish_position_state(self.axis_pos)
             for label, axis in zip(self.pos_labels, self.AXIS_NAMES):
                 label.setText(f"{xyz[axis]}")
 
@@ -2203,6 +2227,7 @@ class NexcopeControlPage(QWidget):
         self.serial_task_timer.stop()
         if self.driver.connected:
             self.driver.disconnect()
+        self.position_state.mark_disconnected()
         self.cleanup_record_db()
 
     def closeEvent(self, event):
@@ -2221,8 +2246,16 @@ class ControllerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._active_connection_owner = None
-        self.onway_window = MCCMainWindow()
-        self.nexcope_page = NexcopeControlPage()
+        self.position_state = PositionState()
+        self.position_server = PositionHttpServer(self.position_state)
+        self.position_server_error: Optional[Exception] = None
+        try:
+            self.position_server.start()
+        except OSError as exc:
+            self.position_server_error = exc
+
+        self.onway_window = MCCMainWindow(position_state=self.position_state)
+        self.nexcope_page = NexcopeControlPage(position_state=self.position_state)
         self._install_connection_hooks(self.onway_window)
         self._install_connection_hooks(self.nexcope_page)
         self.init_ui()
@@ -2348,6 +2381,7 @@ class ControllerMainWindow(QMainWindow):
     def closeEvent(self, event):
         self.onway_window.close()
         self.nexcope_page.shutdown()
+        self.position_server.stop()
         super().closeEvent(event)
 
 

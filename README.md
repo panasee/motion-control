@@ -12,6 +12,90 @@ MCCDemo6 运动控制卡的 Python 驱动和 GUI 界面，支持 TCP/IP 和 RS23
 
 ---
 
+## Third-party read-only XY endpoint
+
+When `controller_gui.py` is running, it starts a localhost-only HTTP endpoint for
+third-party programs that only need to read the current external XY coordinate.
+The endpoint is read-only and does not expose any command path back into the
+motion-control GUI or drivers.
+
+### Endpoint
+
+```text
+GET http://127.0.0.1:51235/position
+```
+
+Only `GET /position` is supported. Write attempts such as `POST /position`
+return `405 Method Not Allowed`.
+
+### Successful response
+
+The response body is compact JSON with exactly `X` and `Y` fields, formatted to
+four decimal places:
+
+```http
+200 OK
+Content-Type: application/json; charset=utf-8
+```
+
+```json
+{"X":12.3457, "Y":98.7654}
+```
+
+Axis mapping depends on the active connected controller:
+
+| Connected controller | Returned `X` | Returned `Y` |
+| --- | --- | --- |
+| Onway | internal `A` axis, GUI index `3` | internal `B` axis, GUI index `4` |
+| Nexcope | internal `X` axis | internal `Y` axis |
+
+### Disconnected response
+
+If no controller is connected, or the controller has been disconnected, the
+endpoint returns an HTTP error instead of zero coordinates:
+
+```http
+503 Service Unavailable
+Content-Type: application/json; charset=utf-8
+```
+
+```json
+{"error":"not connected"}
+```
+
+Third-party programs should treat any non-`200` response as "position not
+available" and must not substitute `0, 0` unless their own workflow explicitly
+requires that fallback.
+
+### Minimal client examples
+
+Python:
+
+```python
+import json
+from urllib.error import HTTPError
+from urllib.request import urlopen
+
+try:
+    with urlopen("http://127.0.0.1:51235/position", timeout=1) as response:
+        xy = json.loads(response.read().decode("utf-8"))
+except HTTPError as exc:
+    if exc.code == 503:
+        xy = None
+    else:
+        raise
+
+print(xy)
+```
+
+PowerShell:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:51235/position
+```
+
+---
+
 ## 目录
 
 1. [环境准备](#1-环境准备)
