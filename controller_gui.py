@@ -39,6 +39,7 @@ from position_server import PositionHttpServer, PositionState
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
+APP_VERSION = "1.2"
 APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
 
 
@@ -1663,7 +1664,23 @@ class NexcopeControlPage(QWidget):
         layout.addWidget(speed_label, 0, 1)
         layout.addLayout(speed_input_layout, 0, 3, 1, 2)
 
-        for row, axis in enumerate(self.AXIS_NAMES, start=1):
+        self.manual_z_speed = QDoubleSpinBox()
+        configure_speed_spinbox(self.manual_z_speed, minimum=0.001, maximum=10, default=1.0)
+        self.manual_z_speed_preset = create_speed_preset_combo(self.manual_z_speed)
+        z_speed_label = QLabel("速度(mm/s):")
+        z_speed_label.setMinimumWidth(100)
+        z_speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        z_speed_input_layout = QHBoxLayout()
+        z_speed_input_layout.setContentsMargins(0, 0, 0, 0)
+        z_speed_input_layout.addWidget(self.manual_z_speed)
+        z_speed_input_layout.addWidget(self.manual_z_speed_preset)
+        z_speed_row = 3
+        layout.addWidget(z_speed_label, z_speed_row, 1)
+        layout.addLayout(z_speed_input_layout, z_speed_row, 3, 1, 2)
+
+        axis_button_rows = {"X": 1, "Y": 2, "Z": 4}
+        for axis in self.AXIS_NAMES:
+            row = axis_button_rows[axis]
             btn_neg = QPushButton(f"{axis}-")
             btn_neg.setMinimumSize(100, 44)
             btn_neg.pressed.connect(lambda a=axis: self.on_axis_jog_start(a, -1))
@@ -1678,9 +1695,9 @@ class NexcopeControlPage(QWidget):
 
         btn_home = QPushButton("回零")
         btn_home.clicked.connect(self.on_move_to_center)
-        layout.addWidget(btn_home, len(self.AXIS_NAMES) + 1, 1, 1, 4)
+        layout.addWidget(btn_home, 5, 1, 1, 4)
 
-        autofocus_row = len(self.AXIS_NAMES) + 2
+        autofocus_row = 6
         layout.addWidget(QLabel("对焦"), autofocus_row, 1)
         self.autofocus_combo = QComboBox()
         self.autofocus_combo.addItems(["x10", "x50", "x100"])
@@ -1923,8 +1940,13 @@ class NexcopeControlPage(QWidget):
             self._set_connection_state(False, "未连接")
             self.log_info("已断开 Nexcope 串口")
 
-    def compute_jog_step_counts(self) -> int:
-        speed_um_per_s = self.manual_speed.value() * 1000.0
+    def get_jog_speed(self, axis: Optional[str] = None) -> float:
+        if axis == "Z":
+            return self.manual_z_speed.value()
+        return self.manual_speed.value()
+
+    def compute_jog_step_counts(self, axis: Optional[str] = None) -> int:
+        speed_um_per_s = self.get_jog_speed(axis) * 1000.0
         counts_per_tick = speed_um_per_s * self.COUNTS_PER_UM * (self.JOG_INTERVAL_MS / 1000.0)
         return max(1, int(round(counts_per_tick)))
 
@@ -1935,7 +1957,7 @@ class NexcopeControlPage(QWidget):
         if self.active_jog_axis is None or self.active_jog_direction == 0:
             return False
 
-        payload = f"{self.compute_jog_step_counts()}"
+        payload = f"{self.compute_jog_step_counts(self.active_jog_axis)}"
         commands = {
             ("X", -1): "L",
             ("X", 1): "R",
@@ -1962,8 +1984,8 @@ class NexcopeControlPage(QWidget):
             if self._send_jog_step():
                 self.jog_timer.start()
                 self.log_info(
-                    f"{axis} 轴Jog开始: speed={self.manual_speed.value():.3f}mm/s, "
-                    f"step={self.compute_jog_step_counts()} counts"
+                    f"{axis} 轴Jog开始: speed={self.get_jog_speed(axis):.3f}mm/s, "
+                    f"step={self.compute_jog_step_counts(axis)} counts"
                 )
         except Exception as exc:
             self.active_jog_axis = None
@@ -2333,7 +2355,7 @@ class ControllerMainWindow(QMainWindow):
             disconnect()
 
     def init_ui(self):
-        self.setWindowTitle("Motion Controller Shell")
+        self.setWindowTitle(f"Motion Controller Shell v{APP_VERSION}")
         self.setWindowIcon(create_app_icon())
         self.resize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)
         self.setMinimumSize(self.ONWAY_WINDOW_WIDTH, self.ONWAY_WINDOW_HEIGHT)

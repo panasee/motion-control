@@ -161,6 +161,12 @@ class NexcopePageStructureTests(unittest.TestCase):
         self.assertIn('QLabel("速度(mm/s):")', source)
         self.assertIn("configure_speed_spinbox(self.manual_speed, minimum=0.001, maximum=10, default=1.0)", source)
         self.assertIn("self.manual_speed_preset = create_speed_preset_combo(self.manual_speed)", source)
+        self.assertIn("self.manual_z_speed = QDoubleSpinBox()", source)
+        self.assertIn("configure_speed_spinbox(self.manual_z_speed, minimum=0.001, maximum=10, default=1.0)", source)
+        self.assertIn("self.manual_z_speed_preset = create_speed_preset_combo(self.manual_z_speed)", source)
+        self.assertIn('z_speed_label = QLabel("速度(mm/s):")', source)
+        self.assertIn("layout.addWidget(z_speed_label, z_speed_row, 1)", source)
+        self.assertIn("layout.addLayout(z_speed_input_layout, z_speed_row, 3, 1, 2)", source)
         self.assertIn("speed_label.setMinimumWidth(100)", source)
         self.assertIn("layout.setColumnStretch(0, 2)", source)
         self.assertIn("for column in range(1, 5):", source)
@@ -384,17 +390,29 @@ class NexcopeJogTests(unittest.TestCase):
         page.JOG_INTERVAL_MS = 100
         page.COUNTS_PER_UM = 100
         page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
+        page.manual_z_speed = types.SimpleNamespace(value=lambda: 0.100)
 
         counts = self.module.NexcopeControlPage.compute_jog_step_counts(page)
 
         self.assertEqual(counts, 50)
+
+    def test_compute_jog_step_counts_uses_z_speed_for_z_axis(self) -> None:
+        page = object.__new__(self.module.NexcopeControlPage)
+        page.JOG_INTERVAL_MS = 100
+        page.COUNTS_PER_UM = 100
+        page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
+        page.manual_z_speed = types.SimpleNamespace(value=lambda: 0.100)
+
+        counts = self.module.NexcopeControlPage.compute_jog_step_counts(page, "Z")
+
+        self.assertEqual(counts, 1000)
 
     def test_on_axis_jog_start_sets_active_axis_and_starts_timer(self) -> None:
         page = object.__new__(self.module.NexcopeControlPage)
         page.driver = types.SimpleNamespace(connected=True)
         page.log_info = lambda msg: None
         page.manual_speed = types.SimpleNamespace(value=lambda: 0.005)
-        page.compute_jog_step_counts = lambda: 50
+        page.compute_jog_step_counts = lambda axis=None: 50
         page._jog_error_count = 2
         events = []
         page._send_jog_step = lambda: (events.append("tick") or True)
@@ -416,7 +434,7 @@ class NexcopeJogTests(unittest.TestCase):
             send_command=lambda command: calls.append(command),
         )
         page.log_info = lambda msg: None
-        page.compute_jog_step_counts = lambda: 25
+        page.compute_jog_step_counts = lambda axis=None: 25
         page.active_jog_axis = "Y"
         page.active_jog_direction = 1
 

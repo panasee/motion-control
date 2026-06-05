@@ -213,6 +213,12 @@ class ControllerShellStructureTest(unittest.TestCase):
         self.assertIn("self.setWindowIcon(create_app_icon())", source)
         self.assertIn("app.setWindowIcon(create_app_icon())", source)
 
+    def test_application_version_is_declared_and_shown_in_shell_title(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('APP_VERSION = "1.2"', source)
+        self.assertIn('self.setWindowTitle(f"Motion Controller Shell v{APP_VERSION}")', source)
+
     def test_onway_publishes_a_b_axes_as_external_x_y(self) -> None:
         module = _load_controller_module()
         page = object.__new__(module.MCCMainWindow)
