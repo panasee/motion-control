@@ -33,6 +33,28 @@ class FakeSerial:
         self.is_open = False
 
 
+class FakeCrBufferedSerial(FakeSerial):
+    def __init__(self, *args, buffer=b"", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.buffer = bytearray(buffer)
+
+    def readline(self) -> bytes:
+        data = bytes(self.buffer)
+        self.buffer.clear()
+        return data
+
+    def read_until(self, expected: bytes = b"\n", size=None) -> bytes:
+        index = self.buffer.find(expected)
+        if index < 0:
+            data = bytes(self.buffer)
+            self.buffer.clear()
+            return data
+        end = index + len(expected)
+        data = bytes(self.buffer[:end])
+        del self.buffer[:end]
+        return data
+
+
 class NexcopeDriverProtocolTest(unittest.TestCase):
     def setUp(self) -> None:
         import sys
@@ -155,6 +177,18 @@ class NexcopeDriverSerialShapeTest(unittest.TestCase):
         response = driver.receive_line()
 
         self.assertEqual(response, "ULP:600_1")
+
+    def test_receive_line_reads_single_cr_terminated_frame_from_buffer(self) -> None:
+        from nexcope_driver import NexcopeDriver
+
+        fake_serial = FakeCrBufferedSerial(buffer=b"0\rR\rR\rULP:500, DLP:250\r")
+        driver = NexcopeDriver(serial_factory=lambda **kwargs: fake_serial)
+        driver.connect_serial("COM7")
+
+        self.assertEqual(driver.receive_line(), "0")
+        self.assertEqual(driver.receive_line(), "R")
+        self.assertEqual(driver.receive_line(), "R")
+        self.assertEqual(driver.receive_line(), "ULP:500, DLP:250")
 
     def test_query_line_sends_command_then_reads_response(self) -> None:
         from nexcope_driver import NexcopeDriver

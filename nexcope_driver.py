@@ -144,7 +144,11 @@ class NexcopeDriver:
 
     def receive_line(self) -> str:
         conn = self._require_connection()
-        raw = conn.readline()
+        read_until = getattr(conn, "read_until", None)
+        if callable(read_until):
+            raw = read_until(DEFAULT_TERMINATOR.encode(self.encoding))
+        else:
+            raw = conn.readline()
         if isinstance(raw, bytes):
             return raw.decode(self.encoding).rstrip("\r\n")
         return str(raw).rstrip("\r\n")

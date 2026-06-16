@@ -120,6 +120,27 @@ def _load_controller_module():
 
 
 class ControllerShellStructureTest(unittest.TestCase):
+    def test_log_filter_keeps_only_error_messages(self) -> None:
+        module = _load_controller_module()
+
+        self.assertTrue(module.should_keep_log_message("[ERROR] serial failed"))
+        self.assertTrue(module.should_keep_log_message("serial error: timeout"))
+        self.assertTrue(module.should_keep_log_message("串口连接异常: timeout"))
+        self.assertTrue(module.should_keep_log_message("状态刷新失败: timeout"))
+        self.assertFalse(module.should_keep_log_message("[TX] 发送 9 bytes"))
+        self.assertFalse(module.should_keep_log_message("[RX] 响应成功"))
+        self.assertFalse(module.should_keep_log_message("串口连接成功: COM7"))
+
+    def test_log_widgets_are_bounded_rolling_buffers(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn('QCheckBox("详细日志 (Verbose)")', source)
+        self.assertIn("ERROR_LOG_MAX_BLOCKS = 100", source)
+        self.assertEqual(
+            source.count("self.info_text.document().setMaximumBlockCount(ERROR_LOG_MAX_BLOCKS)"),
+            2,
+        )
+
     def test_controller_main_window_class_exists(self) -> None:
         module = _parse_source()
 
@@ -216,8 +237,18 @@ class ControllerShellStructureTest(unittest.TestCase):
     def test_application_version_is_declared_and_shown_in_shell_title(self) -> None:
         source = SOURCE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('APP_VERSION = "1.2"', source)
+        self.assertIn('APP_VERSION = "1.4"', source)
         self.assertIn('self.setWindowTitle(f"Motion Controller Shell v{APP_VERSION}")', source)
+
+    def test_about_dialog_shows_author_and_current_version_only(self) -> None:
+        source = SOURCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('"written by Dongkai\\n\\n"', source)
+        self.assertIn('f"版本: {APP_VERSION}"', source)
+        self.assertNotIn('"MCC 运动控制卡 Python 控制界面', source)
+        self.assertNotIn('"基于 MCC6DLL.dll', source)
+        self.assertNotIn('"支持 TCP/IP 和 RS232 通信', source)
+        self.assertNotIn('"版本: 1.0.0"', source)
 
     def test_onway_publishes_a_b_axes_as_external_x_y(self) -> None:
         module = _load_controller_module()

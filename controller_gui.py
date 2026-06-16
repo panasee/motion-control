@@ -39,8 +39,10 @@ from position_server import PositionHttpServer, PositionState
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
-APP_VERSION = "1.2"
+APP_VERSION = "1.4"
 APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
+ERROR_LOG_MAX_BLOCKS = 100
+ERROR_LOG_MARKERS = ("[ERROR]", "ERROR", "error", "错误", "异常", "失败")
 
 
 def bundled_resource_path(relative_path: Path) -> str:
@@ -50,6 +52,10 @@ def bundled_resource_path(relative_path: Path) -> str:
 
 def create_app_icon() -> QIcon:
     return QIcon(bundled_resource_path(APP_ICON_RELATIVE_PATH))
+
+
+def should_keep_log_message(message: str) -> bool:
+    return any(marker in message for marker in ERROR_LOG_MARKERS)
 
 
 def configure_speed_spinbox(spinbox: QDoubleSpinBox, *, minimum: float, maximum: float, default: float) -> None:
@@ -312,9 +318,7 @@ class MCCMainWindow(QMainWindow):
 
         # 日志回调函数 (在 info_text 创建后使用)
         def log_callback(level: str, msg: str):
-            # Verbose 模式显示所有日志，非 verbose 只显示 INFO/WARN/ERROR
-            verbose = self.verbose_check.isChecked() if hasattr(self, 'verbose_check') else True
-            if verbose or level in ("INFO", "WARN", "ERROR"):
+            if level == "ERROR":
                 self.log_info(f"[{level}] {msg}")
 
         self.driver = MCCDriver(log_callback=log_callback)
@@ -551,13 +555,9 @@ class MCCMainWindow(QMainWindow):
         info_group = QGroupBox("信息输出")
         info_layout = QVBoxLayout(info_group)
         
-        # Verbose 开关
-        self.verbose_check = QCheckBox("详细日志 (Verbose)")
-        self.verbose_check.setChecked(True)
-        info_layout.addWidget(self.verbose_check)
-        
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
+        self.info_text.document().setMaximumBlockCount(ERROR_LOG_MAX_BLOCKS)
         self.info_text.setMaximumHeight(150)
         self.info_text.setStyleSheet("font-family: monospace; font-size: 10px;")
         info_layout.addWidget(self.info_text)
@@ -909,6 +909,8 @@ class MCCMainWindow(QMainWindow):
     
     def log_info(self, msg: str):
         """记录信息"""
+        if not should_keep_log_message(msg):
+            return
         import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.info_text.append(f"[{timestamp}] {msg}")
@@ -1204,10 +1206,8 @@ class MCCMainWindow(QMainWindow):
     def on_about(self):
         """关于"""
         QMessageBox.about(self, "关于", 
-            "MCC 运动控制卡 Python 控制界面\n\n"
-            "基于 MCC6DLL.dll 反编译代码实现\n"
-            "支持 TCP/IP 和 RS232 通信\n\n"
-            "版本: 1.0.0"
+            "written by Dongkai\n\n"
+            f"版本: {APP_VERSION}"
         )
     
     def update_status(self):
@@ -1632,6 +1632,7 @@ class NexcopeControlPage(QWidget):
 
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
+        self.info_text.document().setMaximumBlockCount(ERROR_LOG_MAX_BLOCKS)
         self.info_text.setMaximumHeight(180)
         self.info_text.setStyleSheet("font-family: monospace; font-size: 10px;")
         layout.addWidget(self.info_text)
@@ -1878,6 +1879,9 @@ class NexcopeControlPage(QWidget):
         )
 
     def log_info(self, msg: str):
+        if not should_keep_log_message(msg):
+            return
+
         import datetime
 
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -2014,6 +2018,8 @@ class NexcopeControlPage(QWidget):
         self._jog_error_count = 0
         if self.driver.connected:
             self.update_timer.start()
+            if axis is not None:
+                self.update_status()
 
     def on_move_to_center(self):
         if not self.driver.connected:

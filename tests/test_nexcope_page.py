@@ -448,6 +448,7 @@ class NexcopeJogTests(unittest.TestCase):
         page = object.__new__(self.module.NexcopeControlPage)
         page.jog_timer = types.SimpleNamespace(stop=lambda: events.append("stop"))
         page.update_timer = types.SimpleNamespace(start=lambda: events.append("resume_status"))
+        page.update_status = lambda: events.append("refresh_status_now")
         page.driver = types.SimpleNamespace(connected=True)
         page.active_jog_axis = "Z"
         page.active_jog_direction = -1
@@ -458,7 +459,7 @@ class NexcopeJogTests(unittest.TestCase):
         self.assertIsNone(page.active_jog_axis)
         self.assertEqual(page.active_jog_direction, 0)
         self.assertEqual(page._jog_error_count, 0)
-        self.assertEqual(events, ["stop", "resume_status"])
+        self.assertEqual(events, ["stop", "resume_status", "refresh_status_now"])
 
     def test_serial_task_callbacks_run_from_result_timer_and_resume_polling(self) -> None:
         events = []
