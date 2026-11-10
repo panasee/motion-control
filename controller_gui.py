@@ -39,7 +39,7 @@ from position_server import PositionHttpServer, PositionState
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
-APP_VERSION = "1.4"
+APP_VERSION = "1.5.2"
 APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
 ERROR_LOG_MAX_BLOCKS = 100
 ERROR_LOG_MARKERS = ("[ERROR]", "ERROR", "error", "错误", "异常", "失败")
@@ -2274,6 +2274,7 @@ class ControllerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._active_connection_owner = None
+        self.stack_designer = None
         self.position_state = PositionState()
         self.position_server = PositionHttpServer(self.position_state)
         self.position_server_error: Optional[Exception] = None
@@ -2373,6 +2374,24 @@ class ControllerMainWindow(QMainWindow):
         self.setCentralWidget(self.controller_tabs)
         self.apply_window_mode(self.controller_tabs.currentIndex())
 
+        tools_menu = self.menuBar().addMenu("工具(&T)")
+        stack_action = tools_menu.addAction("异质结堆叠设计…")
+        stack_action.triggered.connect(self.open_stack_designer)
+
+    def open_stack_designer(self):
+        if self.stack_designer is None:
+            try:
+                from stack_designer import StackDesignerWindow
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"cv2", "numpy"}:
+                    raise
+                QMessageBox.warning(self, "缺少图像处理依赖", "请在运行环境中安装 numpy 和 opencv-python 后重试。")
+                return
+            self.stack_designer = StackDesignerWindow(self)
+        self.stack_designer.show()
+        self.stack_designer.raise_()
+        self.stack_designer.activateWindow()
+
     def apply_window_mode(self, tab_index: int):
         if tab_index == 1:
             width = self.NEXCOPE_WINDOW_WIDTH
@@ -2407,6 +2426,9 @@ class ControllerMainWindow(QMainWindow):
         return self.nexcope_page
 
     def closeEvent(self, event):
+        if self.stack_designer is not None:
+            self.stack_designer.wait_for_extraction()
+            self.stack_designer.close()
         self.onway_window.close()
         self.nexcope_page.shutdown()
         self.position_server.stop()
