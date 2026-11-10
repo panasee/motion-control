@@ -136,6 +136,98 @@ class DesignerTests(unittest.TestCase):
         self.window.add_to_board()
         self.assertEqual(len(self.window.layers), 2)
 
+    def manual_photo(self, tool="wand"):
+        self.window.photo_tabs.setCurrentIndex(1)
+        self.window.selection_tool.setCurrentIndex(self.window.selection_tool.findData(tool))
+        self.window.load_photo(self.photo)
+        self.app.processEvents()
+        self.assertIsNone(self.window.worker)
+        return self.window.photo_selection.model
+
+    def photo_click(self, x, y, modifiers=Qt.KeyboardModifier.NoModifier):
+        view = self.window.photo_view
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, modifiers, view.mapFromScene(QPointF(x, y)))
+
+    def test_manual_wand_modifiers_undo_and_generate_append(self):
+        model = self.manual_photo()
+        self.photo_click(90, 90)
+        first = model.mask.copy()
+        self.assertGreater(np.count_nonzero(first), 1000)
+        self.photo_click(350, 220, Qt.KeyboardModifier.ShiftModifier)
+        both = model.mask.copy()
+        self.assertGreater(np.count_nonzero(both), np.count_nonzero(first))
+        self.photo_click(350, 220, Qt.KeyboardModifier.AltModifier)
+        np.testing.assert_array_equal(model.mask, first)
+        QTest.keyClick(self.window.photo_view, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        np.testing.assert_array_equal(model.mask, both)
+        self.window.generate_selection_button.click()
+        self.assertEqual(len(self.window.candidates), 2)
+        self.assertEqual(self.window.photo_selection.tool, "edit")
+        self.assertTrue(self.window.add_button.isEnabled())
+        existing = self.window.candidates[0]
+        existing.setRotation(17)
+        self.window.add_button.click()
+        self.assertEqual(self.window.layers[0].rotation(), 17)
+        self.window.selection_tool.setCurrentIndex(0)
+        self.assertFalse(existing.isVisible())
+        self.assertFalse(self.window.add_button.isEnabled())
+        self.photo_click(350, 220)
+        self.window.generate_selection_button.click()
+        self.assertEqual(len(self.window.candidates), 3)
+        self.assertIs(self.window.candidates[0], existing)
+        self.assertEqual(existing.rotation(), 17)
+        self.assertEqual(self.window.candidate_combo.currentIndex(), 2)
+
+    def test_lasso_keyboard_completion_cancel_and_reimport(self):
+        model = self.manual_photo("lasso")
+        for point in ((50, 50), (250, 50), (250, 200)):
+            self.photo_click(*point)
+        self.assertFalse(self.window.generate_selection_button.isEnabled())
+        QTest.keyClick(self.window.photo_view, Qt.Key.Key_Backspace)
+        self.assertEqual(len(self.window.photo_selection.lasso), 2)
+        self.photo_click(150, 200)
+        QTest.keyClick(self.window.photo_view, Qt.Key.Key_Return)
+        self.assertTrue(self.window.generate_selection_button.isEnabled())
+        self.assertGreater(np.count_nonzero(model.mask), 1000)
+        before = model.mask.copy()
+        self.photo_click(300, 300)
+        QTest.keyClick(self.window.photo_view, Qt.Key.Key_Escape)
+        np.testing.assert_array_equal(model.mask, before)
+        self.window.load_photo(self.photo)
+        self.assertFalse(self.window.photo_selection.model.mask.any())
+        self.assertFalse(self.window.photo_selection.model.undo_stack)
+        self.assertFalse(self.window.photo_selection.has_draft)
+
+    def test_rectangle_and_brush_are_one_undoable_gesture(self):
+        model = self.manual_photo("rectangle")
+        view = self.window.photo_view
+        start = view.mapFromScene(QPointF(60, 60))
+        end = view.mapFromScene(QPointF(180, 180))
+        QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(view.viewport(), end)
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        rectangle = model.mask.copy()
+        self.assertTrue(rectangle[100, 100])
+        self.assertEqual(len(model.undo_stack), 1)
+        self.window.selection_tool.setCurrentIndex(self.window.selection_tool.findData("brush"))
+        self.window.selection_operation.setCurrentIndex(self.window.selection_operation.findData("subtract"))
+        self.photo_click(100, 100)
+        self.assertFalse(model.mask[100, 100])
+        self.assertEqual(len(model.undo_stack), 2)
+        with patch("stack_designer.QMessageBox.warning") as warning:
+            self.window.generate_selection_button.click()
+        self.assertIn("孔洞", warning.call_args.args[2])
+        self.assertFalse(self.window.candidates)
+        self.window.selection_actions["undo"].click()
+        np.testing.assert_array_equal(model.mask, rectangle)
+        self.window.selection_actions["redo"].click()
+        self.assertFalse(model.mask[100, 100])
+        self.window.selection_actions["fill"].click()
+        np.testing.assert_array_equal(model.mask, rectangle)
+        self.window.generate_selection_button.click()
+        self.window.add_button.click()
+        self.assertEqual(len(self.window.layers), 1)
+
     def test_layer_order_list_selection_and_deletion(self):
         self.load_photo()
         self.window.add_to_board()

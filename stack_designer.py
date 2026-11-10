@@ -16,8 +16,9 @@ from PyQt6.QtWidgets import (
     QFormLayout, QGraphicsEllipseItem, QGraphicsItem, QGraphicsPolygonItem,
     QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QSplitter, QVBoxLayout, QWidget,
+    QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
+from photo_selection import PhotoSelectionController
 
 
 LINE_STYLES = {
@@ -543,6 +544,7 @@ class StackDesignerWindow(QMainWindow):
         self.board_scene = QGraphicsScene(self)
         self.board_scene.setSceneRect(-5000, -5000, 10000, 10000)
         self.photo_view = CanvasView(self.photo_scene)
+        self.photo_selection = PhotoSelectionController(self.photo_view, self)
         self.board_view = CanvasView(self.board_scene)
         self.board_view.centerOn(0, 0)
 
@@ -558,6 +560,9 @@ class StackDesignerWindow(QMainWindow):
         self.capture_button = button("截图导入…", self.start_screen_capture, capture_buttons)
         self.paste_button = button("粘贴图片", self.paste_photo, capture_buttons)
         photo_layout.addLayout(capture_buttons)
+        self.photo_tabs = QTabWidget()
+        auto_panel = QWidget()
+        auto_layout = QVBoxLayout(auto_panel)
         form = QFormLayout()
         self.threshold = number_box(0, 255, 0, decimals=0)
         self.threshold.setSpecialValueText("自动")
@@ -567,9 +572,13 @@ class StackDesignerWindow(QMainWindow):
         form.addRow("色差阈值", self.threshold)
         form.addRow("最小面积（照片 %）", self.min_area)
         form.addRow("简化程度（周长 %）", self.simplification)
-        photo_layout.addLayout(form)
-        self.extract_button = button("重新识别（替换照片中的轮廓编辑）", self.start_extraction, photo_layout)
+        auto_layout.addLayout(form)
+        self.extract_button = button("重新识别（替换照片中的轮廓编辑）", self.start_extraction, auto_layout)
         self.extract_button.setEnabled(False)
+        self.photo_tabs.addTab(auto_panel, "自动识别")
+        self.manual_panel = self.create_selection_controls()
+        self.photo_tabs.addTab(self.manual_panel, "手动选区")
+        photo_layout.addWidget(self.photo_tabs)
         self.candidate_combo = QComboBox()
         self.candidate_combo.currentIndexChanged.connect(self.select_candidate)
         photo_layout.addWidget(self.candidate_combo)
@@ -583,6 +592,10 @@ class StackDesignerWindow(QMainWindow):
         photo_hint = QLabel("拖动图形内部平移；Shift＋拖动旋转，或在右侧输入角度。\n节点：拖动调整，双击图形添加，右键节点删除。")
         photo_hint.setWordWrap(True)
         photo_layout.addWidget(photo_hint)
+        self.photo_tabs.currentChanged.connect(self.update_selection_tool)
+        self.photo_selection.changed.connect(self.update_selection_controls)
+        self.photo_selection.failed.connect(lambda message: QMessageBox.warning(self, "选区操作失败", message))
+        self.update_selection_controls()
         splitter.addWidget(photo_panel)
 
         board_panel = QWidget()
@@ -680,6 +693,92 @@ class StackDesignerWindow(QMainWindow):
         self.board_scene.selectionChanged.connect(self.board_selection_changed)
         self.statusBar().showMessage("导入照片后自动识别轮廓。退出主程序前请保存白板工程，以便下次继续编辑。")
 
+    def create_selection_controls(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        form = QFormLayout()
+        self.selection_tool = QComboBox()
+        for label, tool in (("魔棒 · 点击相近颜色", "wand"), ("多边形套索", "lasso"),
+                            ("画笔修补", "brush"), ("矩形选区", "rectangle"), ("查看 / 编辑轮廓", "edit")):
+            self.selection_tool.addItem(label, tool)
+        self.selection_tool.currentIndexChanged.connect(self.update_selection_tool)
+        self.selection_operation = QComboBox()
+        for label, operation in (("新选区", "new"), ("增加", "add"), ("减去", "subtract"), ("交集", "intersect")):
+            self.selection_operation.addItem(label, operation)
+        self.selection_operation.currentIndexChanged.connect(
+            lambda: setattr(self.photo_selection, "operation", self.selection_operation.currentData()))
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(self.selection_tool, 2)
+        tool_row.addWidget(self.selection_operation, 1)
+        form.addRow("工具 / 模式", tool_row)
+        self.wand_tolerance = number_box(0, 255, 20, 1, 0)
+        self.wand_tolerance.valueChanged.connect(lambda value: setattr(self.photo_selection, "tolerance", int(value)))
+        self.wand_contiguous = QCheckBox("仅连续区域")
+        self.wand_contiguous.setChecked(True)
+        self.wand_contiguous.toggled.connect(lambda value: setattr(self.photo_selection, "contiguous", value))
+        wand_row = QHBoxLayout()
+        wand_row.addWidget(self.wand_tolerance)
+        wand_row.addWidget(self.wand_contiguous)
+        form.addRow("魔棒容差", wand_row)
+        self.selection_brush_size = number_box(1, 500, 20, 1, 0)
+        self.selection_brush_size.valueChanged.connect(lambda value: setattr(self.photo_selection, "brush_size", int(value)))
+        self.selection_epsilon = number_box(0, 20, 1, 0.1, 2)
+        self.selection_epsilon.setToolTip("轮廓简化允许的偏差，单位为原图像素；越小保留的节点越多，0 不做额外简化。")
+        precision_row = QHBoxLayout()
+        precision_row.addWidget(self.selection_brush_size)
+        precision_row.addWidget(QLabel("轮廓误差"))
+        precision_row.addWidget(self.selection_epsilon)
+        form.addRow("画笔直径 / 像素", precision_row)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        self.selection_actions = {}
+        for label, action in (("撤销", "undo"), ("重做", "redo"), ("清除", "clear"), ("反选", "invert"), ("填补孔洞", "fill")):
+            self.selection_actions[action] = button(label, lambda checked=False, name=action: self.photo_selection.action(name), actions)
+        layout.addLayout(actions)
+        self.generate_selection_button = button("从选区生成可编辑轮廓", self.generate_selection_contours, layout)
+        self.selection_info = QLabel("请导入照片。")
+        layout.addWidget(self.selection_info)
+        hint = QLabel("Shift 增加；Alt 减去；Shift＋Alt 交集。套索：点击顶点，Enter / 双击完成，退格撤回顶点，Esc 取消。\nCtrl＋Z 撤销；Ctrl＋Y 重做。先生成轮廓，再加入白板。")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return panel
+
+    def update_selection_tool(self):
+        tool = self.selection_tool.currentData() if self.photo_tabs.currentIndex() == 1 else "edit"
+        self.photo_selection.set_tool(tool)
+        self.wand_tolerance.setEnabled(tool == "wand")
+        self.wand_contiguous.setEnabled(tool == "wand")
+        self.selection_brush_size.setEnabled(tool == "brush")
+        self.select_candidate(self.candidate_combo.currentIndex())
+
+    def update_selection_controls(self):
+        model = self.photo_selection.model
+        ready = model is not None
+        selected = int(np.count_nonzero(model.mask)) if ready else 0
+        self.generate_selection_button.setEnabled(bool(selected) and not self.photo_selection.has_draft)
+        for action, control in self.selection_actions.items():
+            enabled = ready
+            if action in ("undo", "redo"):
+                enabled = ready and bool(getattr(model, action + "_stack"))
+            elif action in ("clear", "fill"):
+                enabled = bool(selected)
+            control.setEnabled(enabled)
+        message = f"已选 {selected:,} 个原图像素" if ready else "请导入照片。"
+        if self.photo_selection.has_draft:
+            message += " · 正在绘制，请先完成或按 Esc 取消"
+        self.selection_info.setText(message)
+
+    def generate_selection_contours(self):
+        if self.photo_selection.model is None or self.photo_selection.has_draft:
+            return
+        try:
+            polygons = self.photo_selection.model.polygons(self.selection_epsilon.value())
+        except ValueError as exc:
+            QMessageBox.warning(self, "无法生成轮廓", str(exc))
+            return
+        self.selection_tool.setCurrentIndex(self.selection_tool.findData("edit"))
+        self.install_candidates(polygons)
+
     def import_photo(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入 flake 照片", "", "照片 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*)")
         if not path:
@@ -703,6 +802,7 @@ class StackDesignerWindow(QMainWindow):
         if image.isNull():
             raise ValueError("没有可导入的图片。")
         self.clear_candidates()
+        self.photo_selection.clear_image()
         self.photo_scene.clear()
         self.image = image.copy()
         self.image.setDevicePixelRatio(1)
@@ -710,9 +810,14 @@ class StackDesignerWindow(QMainWindow):
         self.photo_path = Path(name)
         photo = self.photo_scene.addPixmap(QPixmap.fromImage(self.image))
         photo.setZValue(-1)
+        self.photo_selection.set_image(self.image)
         self.photo_scene.setSceneRect(QRectF(0, 0, image.width(), image.height()))
         self.photo_view.fit_content()
-        self.start_extraction()
+        if self.photo_tabs.currentIndex() == 0:
+            self.start_extraction()
+        else:
+            self.extract_button.setEnabled(True)
+            self.statusBar().showMessage("请选择工具，在照片上创建选区。")
 
     def paste_photo(self):
         try:
@@ -852,6 +957,9 @@ class StackDesignerWindow(QMainWindow):
         if self.image is None or (self.worker is not None and self.worker.isRunning()):
             return
         self.clear_candidates()
+        self.photo_selection.cancel_draft()
+        self.photo_selection.enabled = False
+        self.photo_tabs.setEnabled(False)
         self.import_button.setEnabled(False)
         self.capture_button.setEnabled(False)
         self.paste_button.setEnabled(False)
@@ -869,8 +977,9 @@ class StackDesignerWindow(QMainWindow):
         self.worker.start()
 
     def install_candidates(self, polygons):
+        first = len(self.candidates)
         self.candidate_combo.blockSignals(True)
-        for i, points in enumerate(polygons):
+        for i, points in enumerate(polygons, first):
             name = f"{self.photo_path.stem} · {i + 1}"
             item = FlakeItem(points, name)
             item.edit_vertices = self.edit_photo_nodes.isChecked()
@@ -880,7 +989,8 @@ class StackDesignerWindow(QMainWindow):
             self.candidates.append(item)
             self.candidate_combo.addItem(f"轮廓 {i + 1}（{len(points)} 个节点）")
         self.candidate_combo.blockSignals(False)
-        self.select_candidate(0)
+        self.candidate_combo.setCurrentIndex(first)
+        self.select_candidate(first)
         self.statusBar().showMessage(f"识别出 {len(polygons)} 个候选轮廓。请选择、检查并修整后加入白板。")
 
     def extraction_failed(self, message):
@@ -889,6 +999,8 @@ class StackDesignerWindow(QMainWindow):
 
     def extraction_finished(self):
         self.worker = None
+        self.photo_selection.enabled = True
+        self.photo_tabs.setEnabled(True)
         self.import_button.setEnabled(True)
         self.capture_button.setEnabled(True)
         self.paste_button.setEnabled(True)
@@ -905,13 +1017,17 @@ class StackDesignerWindow(QMainWindow):
         super().closeEvent(event)
 
     def select_candidate(self, index):
+        editing = self.photo_selection.tool == "edit"
         for i, item in enumerate(self.candidates):
-            item.setVisible(i == index)
-            item.setSelected(i == index)
-        valid = 0 <= index < len(self.candidates)
+            item.setVisible(editing and i == index)
+            item.setSelected(editing and i == index)
+        valid = editing and 0 <= index < len(self.candidates)
         self.add_button.setEnabled(valid)
+        self.edit_photo_nodes.setEnabled(editing)
         if valid:
             self.set_active_item(self.candidates[index])
+        elif self.active_item in self.candidates:
+            self.set_active_item(None)
 
     def add_to_board(self):
         index = self.candidate_combo.currentIndex()

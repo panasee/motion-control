@@ -39,7 +39,7 @@ from position_server import PositionHttpServer, PositionState
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.6"
 APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
 ERROR_LOG_MAX_BLOCKS = 100
 ERROR_LOG_MARKERS = ("[ERROR]", "ERROR", "error", "错误", "异常", "失败")
