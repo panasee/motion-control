@@ -1,9 +1,10 @@
-"""Local read-only HTTP endpoint for exposing current XY controller position."""
+"""Local read-only API: legacy XY position and versioned camera image access."""
 
 from __future__ import annotations
 
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from snapshot_http import HttpResponse, SnapshotHttpServer
+from camera_protocol import CAMERA_IMAGE_PATH, image_response
 
 
 class PositionState:
@@ -34,73 +35,22 @@ class PositionState:
             return {"X": self._x, "Y": self._y}
 
 
-class PositionHttpServer:
-    """Small localhost HTTP server exposing the shared PositionState."""
+class PositionHttpServer(SnapshotHttpServer):
+    """Motion-owned XY API; optional image route is a compatibility adapter.
 
-    def __init__(self, state: PositionState, host: str = "127.0.0.1", port: int = 51235) -> None:
+    The provider may be a remote client. This server does not own camera state,
+    a camera window or an SDK. Original /position response bytes are preserved.
+    """
+    def __init__(self, state: PositionState, host="127.0.0.1", port=51235, *, image_provider=None):
         self.state = state
-        self.host = host
-        self.port = port
-        self._server: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
+        self.image_provider = image_provider
+        super().__init__({"/position": self.position_response,
+                          CAMERA_IMAGE_PATH: lambda: image_response(self.image_provider)},
+                         host=host, port=port)
 
-    @property
-    def url(self) -> str:
-        if self._server is None:
-            return f"http://{self.host}:{self.port}"
-        host, port = self._server.server_address
-        return f"http://{host}:{port}"
-
-    def start(self) -> None:
-        if self._server is not None:
-            return
-
-        state = self.state
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                if self.path == "/position":
-                    snapshot = state.snapshot()
-                    if snapshot is None:
-                        payload = b'{"error":"not connected"}'
-                        self.send_response(503)
-                        self.send_header("Content-Type", "application/json; charset=utf-8")
-                        self.send_header("Content-Length", str(len(payload)))
-                        self.end_headers()
-                        self.wfile.write(payload)
-                        return
-
-                    payload = (
-                        f'{{"X":{snapshot["X"]:.4f}, "Y":{snapshot["Y"]:.4f}}}'
-                    ).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
-
-                self.send_error(404)
-
-            def do_POST(self) -> None:
-                self.send_error(405)
-
-            def log_message(self, format: str, *args) -> None:
-                return
-
-        self._server = ThreadingHTTPServer((self.host, self.port), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        if self._server is None:
-            return
-
-        server = self._server
-        thread = self._thread
-        self._server = None
-        self._thread = None
-        server.shutdown()
-        server.server_close()
-        if thread is not None:
-            thread.join(timeout=2)
+    def position_response(self):
+        snapshot = self.state.snapshot()
+        if snapshot is None:
+            return HttpResponse(503, b'{"error":"not connected"}')
+        payload = f'{{"X":{snapshot["X"]:.4f}, "Y":{snapshot["Y"]:.4f}}}'.encode("utf-8")
+        return HttpResponse(200, payload)
