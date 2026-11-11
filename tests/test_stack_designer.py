@@ -854,54 +854,45 @@ class DesignerTests(unittest.TestCase):
                 self.assertEqual(self.window.project_data(), before)
 
 
-class ShellIntegrationTests(unittest.TestCase):
-    def test_menu_opens_one_independent_window_from_either_controller_tab(self):
-        # Existing rename tests leave Qt stubs in sys.modules; isolate this import.
-        path = Path(__file__).resolve().parents[1] / "controller_gui.py"
-        spec = importlib.util.spec_from_file_location("controller_gui_integration", path)
-        controller_gui = importlib.util.module_from_spec(spec)
+class MicroscopeIntegrationTests(unittest.TestCase):
+    def test_menu_owns_reuses_and_closes_designer_and_preserves_capture_behavior(self):
         with patch.dict(sys.modules, REAL_QT_MODULES):
-            spec.loader.exec_module(controller_gui)
-
+            from microscope_workspace import MicroscopeWindow
         app = QApplication.instance() or QApplication([])
-
-        class OnwayPage(QMainWindow):
-            def __init__(self, **kwargs):
-                super().__init__()
-                self.setCentralWidget(QWidget())
-
-        class NexcopePage(QWidget):
-            def __init__(self, **kwargs):
-                super().__init__()
-
-            def shutdown(self):
-                pass
-
-        with patch.object(controller_gui, "MCCMainWindow", OnwayPage), \
-             patch.object(controller_gui, "NexcopeControlPage", NexcopePage), \
-             patch.object(controller_gui, "PositionHttpServer"):
-            shell = controller_gui.ControllerMainWindow()
+        with tempfile.TemporaryDirectory() as folder:
+            microscope = MicroscopeWindow(settings_path=Path(folder) / "settings.json")
+            microscope.show()
             try:
-                menu = next(action.menu() for action in shell.menuBar().actions() if "工具" in action.text())
-                menu.actions()[0].trigger()
-                designer = shell.stack_designer
+                self.assertIsNone(microscope.stack_designer)
+                menu = next(action.menu() for action in microscope.menuBar().actions() if "工具" in action.text())
+                action = next(action for action in menu.actions() if "叠层" in action.text())
+                action.trigger()
+                designer = microscope.stack_designer
+                self.assertIs(designer.parentWidget(), microscope)
                 self.assertTrue(designer.isWindow())
                 self.assertTrue(designer.isVisible())
-                shell.show()
+                layer = FlakeItem([(0, 0), (100, 0), (100, 80)], "retained")
+                designer.layers.append(layer)
+                designer.board_scene.addItem(layer)
+                designer.refresh_layers(layer)
                 designer.start_screen_capture()
-                self.assertFalse(shell.isVisible())
+                self.assertFalse(microscope.isVisible())
                 self.assertFalse(designer.isVisible())
                 designer.finish_screen_capture()
-                self.assertTrue(shell.isVisible())
+                self.assertTrue(microscope.isVisible())
                 self.assertTrue(designer.isVisible())
                 designer.close()
-                shell.controller_tabs.setCurrentIndex(1)
-                menu.actions()[0].trigger()
-                self.assertIs(shell.stack_designer, designer)
+                microscope.device_tabs.setCurrentIndex(1)
+                action.trigger()
+                self.assertIs(microscope.stack_designer, designer)
+                self.assertEqual(designer.layers, [layer])
                 self.assertTrue(designer.isVisible())
+                self.assertFalse(microscope.camera_session.alive)
+                microscope.close()
+                self.assertFalse(designer.isVisible())
             finally:
-                shell.close()
-                shell.deleteLater()
+                microscope.close()
+                microscope.deleteLater()
                 app.processEvents()
 
 

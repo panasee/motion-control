@@ -36,10 +36,13 @@ from PyQt6.QtCore import QRectF
 from onway_driver import MCCDriver, ParaIndex, SERIAL_AVAILABLE
 from nexcope_driver import NexcopeDriver, SERIAL_AVAILABLE as NEXCOPE_SERIAL_AVAILABLE
 from position_server import PositionHttpServer, PositionState
+from camera_protocol import CameraImageClient
+from peer_apps import launch_microscope
+from app_version import APP_VERSION
+from onway_session import DesktopOnwayDriver
 
 
 SPEED_PRESET_LABELS = ["0.001", "0.003", "0.005", "0.01", "0.05", "0.1", "0.5", "1", "1.5", "2"]
-APP_VERSION = "1.6"
 APP_ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
 ERROR_LOG_MAX_BLOCKS = 100
 ERROR_LOG_MARKERS = ("[ERROR]", "ERROR", "error", "错误", "异常", "失败")
@@ -321,7 +324,7 @@ class MCCMainWindow(QMainWindow):
             if level == "ERROR":
                 self.log_info(f"[{level}] {msg}")
 
-        self.driver = MCCDriver(log_callback=log_callback)
+        self.driver = DesktopOnwayDriver(log_callback=log_callback)
         self.jog_mode = True
         self.speed_override = 0.0
         self.active_jog_axes = set()
@@ -920,7 +923,12 @@ class MCCMainWindow(QMainWindow):
         ip = self.ip_edit.text()
         port = int(self.port_edit.text())
         
-        if self.driver.connect(ip, port):
+        try:
+            connected = self.driver.connect(ip, port)
+        except (OSError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Onway 连接失败", str(exc))
+            return
+        if connected:
             self.log_info(f"TCP连接成功: {ip}:{port}")
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
@@ -2274,9 +2282,10 @@ class ControllerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._active_connection_owner = None
-        self.stack_designer = None
         self.position_state = PositionState()
-        self.position_server = PositionHttpServer(self.position_state)
+        self.camera_image_client = CameraImageClient()
+        self.position_server = PositionHttpServer(
+            self.position_state, image_provider=self.camera_image_client.snapshot_png)
         self.position_server_error: Optional[Exception] = None
         try:
             self.position_server.start()
@@ -2375,22 +2384,14 @@ class ControllerMainWindow(QMainWindow):
         self.apply_window_mode(self.controller_tabs.currentIndex())
 
         tools_menu = self.menuBar().addMenu("工具(&T)")
-        stack_action = tools_menu.addAction("异质结堆叠设计…")
-        stack_action.triggered.connect(self.open_stack_designer)
+        microscope_action = tools_menu.addAction("显微镜工作台…")
+        microscope_action.triggered.connect(self.open_microscope_workspace)
 
-    def open_stack_designer(self):
-        if self.stack_designer is None:
-            try:
-                from stack_designer import StackDesignerWindow
-            except ModuleNotFoundError as exc:
-                if exc.name not in {"cv2", "numpy"}:
-                    raise
-                QMessageBox.warning(self, "缺少图像处理依赖", "请在运行环境中安装 numpy 和 opencv-python 后重试。")
-                return
-            self.stack_designer = StackDesignerWindow(self)
-        self.stack_designer.show()
-        self.stack_designer.raise_()
-        self.stack_designer.activateWindow()
+    def open_microscope_workspace(self):
+        try:
+            launch_microscope()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "无法启动显微镜程序", str(exc))
 
     def apply_window_mode(self, tab_index: int):
         if tab_index == 1:
@@ -2426,9 +2427,6 @@ class ControllerMainWindow(QMainWindow):
         return self.nexcope_page
 
     def closeEvent(self, event):
-        if self.stack_designer is not None:
-            self.stack_designer.wait_for_extraction()
-            self.stack_designer.close()
         self.onway_window.close()
         self.nexcope_page.shutdown()
         self.position_server.stop()
@@ -2437,6 +2435,7 @@ class ControllerMainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(create_app_icon())
     
     # 设置样式

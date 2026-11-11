@@ -237,7 +237,8 @@ class ControllerShellStructureTest(unittest.TestCase):
     def test_application_version_is_declared_and_shown_in_shell_title(self) -> None:
         source = SOURCE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('APP_VERSION = "1.6"', source)
+        from app_version import APP_VERSION
+        self.assertEqual(_load_controller_module().APP_VERSION, APP_VERSION)
         self.assertIn('self.setWindowTitle(f"Motion Controller Shell v{APP_VERSION}")', source)
 
     def test_about_dialog_shows_author_and_current_version_only(self) -> None:
