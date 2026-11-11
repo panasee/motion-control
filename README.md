@@ -4,15 +4,40 @@ MCCDemo6 运动控制卡的 Python 驱动和 GUI 界面，支持 TCP/IP 和 RS23
 
 ## Current Entrypoints
 
-- GUI entrypoint: `controller_gui.py`
+- Motion application entrypoint: `controller_gui.py`
+- Independent microscope application entrypoint: `microscope_app.py` (legacy command `microscope_workspace.py` delegates to it)
 - Onway driver: `onway_driver.py`
 - Nexcope driver: `nexcope_driver.py`
 - `controller_gui.py` now hosts both `Onway` and `Nexcope` tabs
 - `Onway` keeps the existing six-axis logic; `Nexcope` uses a separate three-axis page with XY-only position records
 
+## 显微镜工作台与 Nikon DS-Fi3
+
+显微镜是独立应用，与 motion-control 并列。运行 `.\.venv-camera\Scripts\python.exe microscope_app.py` 即可使用；运动程序中的 **工具 → 显微镜工作台…** 仅启动独立进程，重复启动会唤回已有窗口。关闭任一程序不会关闭另一程序。架构边界与后续运动接入原则见 [APPLICATION-ARCHITECTURE.md](APPLICATION-ARCHITECTURE.md)。
+显微镜不依赖运动程序。相机与测量核心依赖 `PyQt6`、`numpy`；“工具”菜单中的叠层设计器按需加载，使用 OpenCV，完整安装包已包含该工具及其依赖声明。相机后端要求 Windows x64 与已验证的本机 `KsCam.dll` 2.1.2.3；启动窗口不会加载 DLL 或连接硬件。仓库目录名不代表应用从属关系；`pyproject.toml` 可独立构建显微镜安装包。
+
+- 布局参考 NIS-Elements 的图像工作区：上方图像工具栏、左侧标记工具、中央图像、右侧设备与标记面板、底部测量表。
+- **控制台 → Onway**：选择 TCP/IP（默认 `192.168.0.7:8888`），或选择串口、刷新/输入 COM 号和波特率，然后点击“连接 Onway”。读回 X、Y、Z、A、B、C 六轴位置后开放操作，无需运行运动控制程序或连接相机。两个 2.0 应用在同一 Windows 用户下互斥使用 Onway，换程序前先断开；旧版程序不参与互斥。
+- **运动操作**：按住轴旁的“＋/−”按设定速度点动，松开停止该轴。“六轴回零”启动全部六轴回零，“停止运动”发送全轴停止。“记录位置”重新读取六轴并带时间追加到设置目录的 `onway-positions.csv`。显微镜不提供 Nexcope 控制，也不向运动程序的 `/position` 发布坐标。
+- **连接相机 → 应用参数 → 实时预览 / 拍摄单帧**：先停止 NIS-Elements 对相机的占用，再点击连接。连接时只读取硬件参数，覆盖界面中的旧预设；编辑曝光、增益、采样后点击应用。采集使用手动曝光、自由运行。曝光按设备范围及步长量化，并显示硬件 / 帧读回值。支持全幅 2880×2048 和平均采样 1440×1024，内部将已实测的 BGR 转为 RGB8。平均采样 20 ms 实测约 30 fps；全幅 100 ms 约 10 fps。全幅短曝光此前出现帧号缺口，不保证无损连续录制。
+- **停止与保存**：停止预览会冻结最后一帧；单帧拍摄会重新启动采集并取得新帧。空闲时“保存相机原图与参数”输出不带软件白平衡和标记的 RGB8 PNG，以及同名 JSON（尺寸、曝光、增益、帧号、时间、通道顺序等）。它不是传感器高位深 RAW。采集线程与界面隔离，预览只保留最新帧；“显示跳过”与设备帧号缺口分别统计。显微镜自身退出时停止采集、恢复连接前参数并释放设备；运动程序退出不影响相机。
+- **更换采样 / 图像来源**：首次切换到相机或改变采样模式后，新图像清除标记并取消旧标定；已有标记时会先确认。同一来源及采样模式的实时帧保留缩放、标记和 RGB 路径。更换物镜等软件无法检测的光学变化仍需手动重新标定。
+- **后端迁移**：界面与采集会话依赖 `microscope_camera.py` 的接口，当前实现为 `nikon_ks_camera.py`，ABI 封装在 `nikon_ks_bindings.py`。拿到官方 DSCam SDK 后增加对应后端即可复用界面、标记和保存流程；仍须重新验证结构体、参数单位、通道顺序、缓冲区寿命及关闭流程，不能仅改 DLL 文件名。默认路径为 `C:\Program Files\NIS-Elements D\KsCam.dll`，可用 `NIKON_KSCAM_DLL` 指向相同 SHA-256 的已验证运行库；其他版本会拒绝加载。实现和实测记录见 [CAMERA-INTEGRATION.md](CAMERA-INTEGRATION.md)。
+- **打开图像**：支持 PNG、JPEG、BMP、TIFF；滚轮缩放、中键平移，也可使用平移工具、适合窗口及 1:1。当前只显示读入的单幅图像，不支持 ND2 或多页序列浏览。
+- **长度**：拖出测量线；**轮廓**：依次点击顶点，Enter / 双击完成，Backspace 撤回当前顶点，Esc 取消；**矩形**：拖出四节点轮廓。
+- 切换 **选择** 后可拖动标记、Shift＋拖动旋转。在右侧开启 **编辑节点** 后拖动节点，双击轮廓加点、右键删点（轮廓至少三个节点；测量线保留两个端点）。支持名称、颜色、线宽、线形、填充和角度修改。
+- 测量始终使用原图像素坐标，与显示缩放无关；未标定显示 `px` / `px²`，设置实测的 `µm/px` 后显示物理长度 / 面积。轮廓结果为周长和面积；自交轮廓明确标为无法计算面积。更换图像会清除标记，有标记时先确认；标定比例作为显微镜配置保留，更换物镜、倍率或像素合并设置后请重新标定。
+- **RGB 路径**：依次点击两个或更多节点，Enter / 双击完成开放折线。底部“RGB 路径强度”显示三通道曲线，也可选中已有长度测量线查看。沿原图路径每 1 px 采样并包含终点，使用双线性插值；横轴为累计路径距离，有标定时显示 µm。鼠标移到曲线上可读出距离及 RGB 值，各通道可单独显隐；节点编辑、移动和旋转后自动重新计算。路径超出图像时明确报错，不沿边界伪造采样。
+- 曲线默认使用 **原始图像 · RGB8**，可切换 **白平衡后 · RGB8**；不采样叠加的标记。当前数值是图像转换到 8-bit RGB 后的 0–255 像素值，不是原生高位深传感器数据或绝对光功率。曲线 CSV 包含原图坐标、像素 / 实际距离、RGB、图像来源及应用的增益。
+- **白平衡**位于“相机”选项卡，作用于本地图像和实时相机帧，不改变相机硬件白平衡。支持灰世界自动校正、点击中性灰 / 白区域（周围 9×9 像素，边缘处缩小范围）、手动 R/G/B 增益（0.01–16 倍）及恢复原图。每次从保留的原图计算，不累积校正；显示值四舍五入并截取到 0–255，导出的标记 PNG 使用校正后的图像。参考区域有零值通道或所需增益超限时明确报错并保留原设置。白平衡增益会记忆并沿用到新图像。
+- **参数记忆**：显微镜自身正常退出时保存到 `%APPDATA%/microscope-workbench/settings.json`（无 APPDATA 时为 `~/.config/microscope-workbench/`）。新配置不存在时可读取旧 `%APPDATA%/motion-control/microscope-settings.json`，校验通过后仅写新目录，不修改旧文件。下次启动恢复曝光、相机增益、点动速度预设、完整精度的白平衡增益、标定比例、选项卡、RGB 数据来源与通道显隐、标记样式、节点编辑及窗口布局。恢复设置不会连接设备或启动采集 / 运动。保存失败会提示并阻止退出；损坏的设置不会被默认值覆盖。
+- 可导出测量 CSV，以及原图尺寸的标记 PNG。PNG 是带标记的显示图，不是原始科学数据或可编辑工程。重复点击运动程序的入口会唤回尚在运行的显微镜，保留其当前会话；关闭显微镜则结束会话，再次启动不会恢复未保存的图像和标记，请先导出所需结果。
+
+布局参考：[NIS-Elements D Advanced Layout](https://www.nisoftware.net/NikonSaleApplication/Help/Docs-D/eng_d/layout.advanced.html)。
+
 ## 异质结堆叠设计
 
-从主窗口的 **工具 → 异质结堆叠设计…** 打开独立窗口，两个控制器标签页下均可使用，无需连接设备。
+从显微镜工作台的 **工具 → 异质结叠层设计…** 打开设计窗口，无需连接相机或运动设备。该入口已从 motion-control 移除；设计器归显微镜应用管理。
 也可以通过 `python stack_designer.py` 单独启动。
 
 1. **导入 flake 照片**：支持 PNG、JPEG、BMP、TIFF。也可点击“截图导入…”：程序窗口暂时隐藏，在任意显示器内拖动框选区域，松开鼠标自动导入，Esc 取消并恢复原窗口。截图按实际像素裁切，支持高 DPI 显示器；每次框选限于一个显示器。“粘贴图片”可直接导入系统截图工具等放入剪贴板的图片。导入后自动识别候选轮廓；一张照片中有多片时，用下拉框选择目标。
@@ -41,10 +66,8 @@ MCCDemo6 运动控制卡的 Python 驱动和 GUI 界面，支持 TCP/IP 和 RS23
 输出为外边界多边形，不包含内部孔洞；弱对比、阴影、污染或接触的 flakes 需要检查及手动修整，必要时先裁剪照片。
 大照片会缩小到最长边 1600 像素进行识别，再还原到原图坐标。
 
-v1.6 独立程序为 `release/MotionController-v1.6.exe`；通用版 `release/MotionController.exe` 保持不变。
-
 初始图形大小按照片像素保持，不自动推断实际长度。不同显微倍率的照片需要统一比例后组合。
-关闭设计窗口后重新打开会保留本次设计；退出主程序前请手动保存工程，下次打开 `.hstack.json` 即可恢复。PNG 只用于图像导出，不可替代可编辑的工程文件。
+关闭设计窗口后，在同一显微镜会话中重新打开会保留本次设计；退出显微镜会关闭设计器，请先手动保存工程，下次打开 `.hstack.json` 即可恢复。PNG 只用于图像导出，不可替代可编辑的工程文件。
 使用该功能需在运行和打包环境安装 `numpy`、`opencv-python`（已有 PyQt6）：
 
 ```bash
@@ -52,6 +75,120 @@ pip install numpy opencv-python
 ```
 
 ---
+
+## Windows 独立 EXE 构建
+
+在已安装 PyInstaller、PyQt6、pyserial、NumPy 和 OpenCV 的 Windows Python 环境下，从仓库根目录执行：
+
+```powershell
+python tools/build_windows.py motion       # release/v2.0/MotionController.exe
+python tools/build_windows.py microscope   # release/v2.0/MicroscopeWorkbench.exe
+```
+
+也可用 `python tools/build_windows.py all` 依次构建两者。运动程序沿用原来的 PyInstaller 单文件、无控制台、应用图标及串口打包方式。两个 EXE 都可单独复制运行；如需从运动程序菜单打开显微镜，将二者放在同一目录。Nikon 相机仍需目标机上受支持的运行库。窗口、Windows 文件版本和 wheel 版本均来自 `app_version.py` 的 `APP_VERSION`，旧版本文件不会被覆盖。
+
+## Current microscope image API
+
+Run `microscope_app.py` (the legacy `microscope_workspace.py` command also works),
+explicitly connect the camera, then start preview or capture a single frame.
+The microscope owns its image service independently of the motion application:
+
+```text
+GET http://127.0.0.1:51236/api/v1/camera/image
+```
+
+- **200**: `Content-Type: image/png`, original RGB8 pixels at the current camera
+  acquisition resolution, without software white balance, annotations or UI.
+  `X-Image-Id` identifies this exact image; `Cache-Control: no-store` prevents
+  HTTP caching. A repeated request can return the same image ID.
+- **503**: `{"error":{"code":"image_unavailable"}}` when the workspace has no
+  current camera image: before acquisition, while disconnected/reconnecting,
+  or after opening a local image. Exiting the microscope stops its HTTP server.
+- **500**: `{"error":{"code":"image_encoding_failed"}}` if PNG encoding fails.
+- **POST** is rejected with **405**. GET does not connect hardware, change camera
+  settings, or trigger a new exposure. Stopping preview retains its final frame
+  while the camera remains connected. Check the embedded acquisition timestamp
+  if freshness matters; this endpoint is a snapshot, not a video stream.
+
+The PNG text field `microscope_frame` contains JSON belonging to the **same image**:
+
+```json
+{
+  "schema_version": 1,
+  "image_id": "unique-image-id",
+  "source": "camera",
+  "pixels": "original_rgb8_without_software_white_balance_or_annotations",
+  "camera": {
+    "device_serial": 123,
+    "frame_no": 42,
+    "captured_at": "2026-11-11T16:38:44.193394+08:00",
+    "width": 2880,
+    "height": 2048,
+    "pixel_format": "RGB8",
+    "exposure_ms": 20,
+    "gain": 2
+  }
+}
+```
+
+This is an illustrative subset of the camera metadata; additional fields may
+be present. `captured_at` is the backend's host-side frame retrieval time, not a
+hardware exposure timestamp. There is currently **no synchronized stage position
+or pixel-to-stage calibration** in this response. Reading `/position` separately
+does not establish the position at exposure time.
+
+Python download (no import from motion-control needed):
+
+```python
+from pathlib import Path
+from urllib.request import urlopen
+
+with urlopen("http://127.0.0.1:51236/api/v1/camera/image", timeout=10) as response:
+    png = response.read()
+    image_id = response.headers["X-Image-Id"]
+Path("microscope.png").write_bytes(png)
+```
+
+PyDataVault can decode both pixels and metadata using its existing PySide6:
+
+```python
+import json
+from PySide6.QtGui import QImage
+
+image = QImage.fromData(png, "PNG")
+metadata = json.loads(image.text("microscope_frame"))
+assert metadata["image_id"] == image_id
+```
+
+Both microscope entry commands start this service; `--no-api` disables it and
+`--api-port` selects another port. The old motion-owned address
+`http://127.0.0.1:51235/api/v1/camera/image` remains a compatibility proxy to the
+default port 51236, with the same PNG, metadata and image ID. It returns 503 when
+the microscope is absent; `/position` still operates independently. New clients
+should use the microscope directly. Requests already encoding an image can finish after a disconnect or a
+new frame arrives; their pixels, metadata and image ID remain one consistent
+snapshot. Subsequent requests use the new state.
+
+### Extension boundaries
+
+The two applications run in separate processes and exchange snapshots over HTTP.
+They share the Onway driver and device lock without importing each other's GUI. The existing
+`/position` response stays compatible. New routes use `/api/v1/`; clients should
+ignore additional metadata fields, and incompatible changes should use a new
+API version.
+
+The HTTP layer receives an injected image snapshot provider. `CameraImageState`
+owns the current image and caches its PNG on demand. Publication only replaces
+the latest snapshot; encoding happens outside the GUI and publication lock,
+with a separate lock limiting concurrent encoders. This is suitable for
+on-demand image reads, not sustained full-frame video delivery.
+
+Future movement/capture/scan commands need a separate command dispatcher into
+the hardware-owning workers, plus task IDs, completion/error/cancellation status
+and explicit coordinate units. Adding an HTTP write handler that directly calls
+the drivers would not provide those guarantees. Future synchronized acquisition
+should bind image, position and calibration to one acquisition ID rather than
+combine unrelated latest-value requests.
 
 ## Third-party read-only XY endpoint
 
@@ -66,7 +203,7 @@ motion-control GUI or drivers.
 GET http://127.0.0.1:51235/position
 ```
 
-Only `GET /position` is supported. Write attempts such as `POST /position`
+The position route supports only `GET /position`. Write attempts such as `POST /position`
 return `405 Method Not Allowed`.
 
 ### Successful response
@@ -162,8 +299,9 @@ pip install pyserial PyQt6
 
 ### 1.2 运行 GUI
 
+在仓库根目录执行：
+
 ```bash
-cd /home/dongkai-claw/od-work/claw-dir
 python controller_gui.py
 ```
 

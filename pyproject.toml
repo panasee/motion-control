@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microscope-workbench"
+dynamic = ["version"]
+description = "Independent microscope acquisition and measurement application"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.7,<7", "numpy>=1.26,<3", "opencv-python>=4.11,<5", "pyserial>=3.5"]
+
+[project.gui-scripts]
+microscope-workbench = "microscope_app:main"
+
+[tool.setuptools]
+# Explicit standalone distribution boundary; never include the whole repository.
+py-modules = [
+  "microscope_app", "microscope_workspace", "microscope_settings",
+  "microscope_camera", "microscope_backends", "microscope_imaging", "camera_image",
+  "nikon_ks_camera", "nikon_ks_bindings", "imaging_canvas",
+  "camera_protocol", "snapshot_http",
+  "stack_designer", "photo_selection", "app_version", "microscope_motion", "onway_session", "onway_driver",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "app_version.APP_VERSION"}

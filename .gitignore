@@ -5,8 +5,12 @@ __pycache__/
 .worktrees/
 docs/
 release/
+build/
+*.egg-info/
 
 # Local notes and capture artifacts
+/log/
+/.codex-remote-attachments/
 analysis.md
 usb_port_snapshot_*.json
 
